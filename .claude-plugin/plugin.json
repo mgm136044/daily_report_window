@@ -1,0 +1,17 @@
+{
+  "name": "daily-report",
+  "version": "1.0.0",
+  "description": "Collects what your coding agents did each day — Claude Code transcripts, Codex rollouts, git commits, files changed on disk — and writes one summarised row per day into a Notion database.",
+  "author": {
+    "name": "daily-report contributors"
+  },
+  "license": "MIT",
+  "keywords": [
+    "notion",
+    "journal",
+    "standup",
+    "automation",
+    "launchd",
+    "codex"
+  ]
+}

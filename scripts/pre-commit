@@ -1,0 +1,16 @@
+#!/bin/sh
+# 공개 저장소용 pre-commit 훅.
+#   설치: ln -sf ../../scripts/pre-commit .git/hooks/pre-commit
+#
+# 개인 사전이 없으면 일반 패턴만 검사한다. 공개 저장소에서는 그게 정상이고,
+# 내보내기 단계에서 사전을 붙여 한 번 더 본다.
+set -e
+ROOT="$(git rev-parse --show-toplevel)"
+if [ -f "$ROOT/scripts/check_no_pii.py" ]; then
+    python3 "$ROOT/scripts/check_no_pii.py" "$ROOT" --no-history --quiet || {
+        echo ""
+        echo "개인정보 유출 후보가 있어 커밋을 중단했습니다."
+        echo "의도된 예시라면 그 줄에 'pii-allow: 이유' 를 붙이세요."
+        exit 1
+    }
+fi

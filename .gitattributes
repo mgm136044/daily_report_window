@@ -1,0 +1,22 @@
+# Line endings, pinned rather than left to each contributor's core.autocrlf.
+#
+# This matters more since the repository grew a second platform: a Windows
+# checkout with autocrlf=true rewrites every file it touches, and two of the
+# files here stop working if that reaches them.
+
+* text=auto eol=lf
+
+# Shell scripts must be LF. A CRLF install.sh fails on macOS with
+# "bad interpreter: /usr/bin/env bash^M", which reads like a missing bash.
+*.sh            text eol=lf
+scripts/pre-commit text eol=lf
+
+# PowerShell is the mirror image: CRLF is the convention, and install.ps1 must
+# also keep its UTF-8 BOM — without it Windows PowerShell 5.1 decodes the file
+# in the machine's ANSI codepage, mangles every Korean string, and fails to
+# parse. Git does not touch the BOM; this line only keeps the endings right.
+*.ps1           text eol=crlf
+
+# Property lists and task definitions are consumed by the OS, not by a shell.
+*.plist         text eol=lf
+*.template      text eol=lf

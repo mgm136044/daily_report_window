@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!--
+  Task Scheduler definition, registered by install.ps1.
+
+  This is XML rather than a `schtasks /Create` command line because the three
+  settings that make the job survive a machine that was off are not reachable
+  from the flags: StartWhenAvailable, WakeToRun, and the battery pair.
+-->
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>하루 마감 보고서 — Claude Code / Codex 세션 기록에서 하루치 업무 보고서를 만들어 Notion 에 적재합니다.</Description>
+    <URI>\{{LABEL}}</URI>
+  </RegistrationInfo>
+
+  <Triggers>
+    <!-- 04:05: the logical day closes at 04:00, so running any earlier would
+         cut off late-night work. -->
+    <CalendarTrigger>
+      <StartBoundary>{{START_BOUNDARY}}</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay>
+        <DaysInterval>1</DaysInterval>
+      </ScheduleByDay>
+    </CalendarTrigger>
+  </Triggers>
+
+  <Principals>
+    <!-- InteractiveToken, not Password or S4U.
+
+         The Claude Code CLI's credentials are protected against the logged-on
+         user. A task registered to "run whether the user is logged on or not"
+         gets a token that cannot decrypt them, so `claude -p` answers "Not
+         logged in" every night while everything else looks healthy. This is
+         the Windows shape of the missing-USER failure the macOS plist warns
+         about, and it is just as invisible.
+
+         The cost is that the job only runs while someone is logged on. A
+         locked screen counts as logged on; a signed-out or restarted machine
+         does not, and those days are recovered by StartWhenAvailable together
+         with the tool's own lastrun ledger. -->
+    <Principal id="Author">
+      <UserId>{{USER_SID}}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+
+    <!-- The report is a few minutes of work once a day; refusing to run it on
+         battery would mean a laptop never produces one. -->
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+
+    <!-- Wakes the machine from sleep. It cannot wake one that is powered off
+         or hibernated, which is why StartWhenAvailable above is the setting
+         that actually carries the guarantee: a missed 04:05 fires as soon as
+         the machine is usable again, and the ledger backfills from there. -->
+    <WakeToRun>true</WakeToRun>
+
+    <!-- Comfortably longer than run.watchdog_sec so the tool's own watchdog
+         fires first and can record the failure and notify. A task killed by
+         the scheduler leaves nothing behind.
+
+         The watchdog is per *day*, not per run, so a full 14-day backfill has
+         a theoretical worst case far beyond this. That combination is not
+         reachable in practice — a first install seeds all but one day as
+         skipped, and every completed day is written to the ledger as it
+         finishes, so a truncated backfill resumes rather than restarts. -->
+    <ExecutionTimeLimit>PT6H</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+
+  <Actions Context="Author">
+    <Exec>
+      <!-- pythonw.exe: an Exec action runs in the user's session, so python.exe
+           would pop a console window at 04:05 every day. It has no stdout at
+           all, which is exactly why the log flag below exists: Task Scheduler
+           has no StandardOutPath, so the job binds its own log files before it
+           prints anything.
+
+           (An XML comment may not contain two consecutive hyphens, which is
+           why the flag is named here in prose rather than written out. Task
+           Scheduler rejects the whole definition as malformed if it does.) -->
+      <Command>{{PYTHON}}</Command>
+      <!-- -u: without it Python block-buffers into the redirected log, which
+             stays empty while the job runs. When it hung, the log gave no clue
+             where.
+           -X utf8: every message this tool prints is Korean. -->
+      <Arguments>-X utf8 -u "{{PROJECT_DIR}}\run_day.py" --log</Arguments>
+      <WorkingDirectory>{{PROJECT_DIR}}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

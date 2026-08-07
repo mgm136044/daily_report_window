@@ -1,0 +1,311 @@
+# daily-report configuration — Windows
+#
+# Copy to config.toml and edit. The defaults below work as-is; the only value
+# you must set is `git.authors`.
+#
+#   Copy-Item config.windows.example.toml config.toml
+#
+# config.toml is gitignored — it describes your machine and your work.
+#
+# Paths may be written with forward slashes; they are normalized before use.
+# The exclusion lists are matched as substrings against the normalized path, so
+# `/AppData/Local/Temp/` matches `C:\Users\you\AppData\Local\Temp\x` and the
+# comparison is case-insensitive, as Windows paths are.
+
+[day]
+# Where one "day" ends. 4 means work done at 2 a.m. belongs to the previous
+# day, which is usually what people mean. The job runs just after this hour.
+boundary_hour = 4
+
+# Reporting timezone. Omit to follow the system timezone, which is almost
+# always right. Set it only if reports should follow a fixed zone regardless
+# of where the machine is.
+# timezone_offset_hours = 9
+
+[sources]
+claude_projects_dir = "~/.claude/projects"
+
+# Codex CLI rollout logs. If Codex is not installed this is skipped silently —
+# nothing to configure.
+codex_sessions_dir = "~/.codex/sessions"
+
+
+# Where to look for git repositories, and how deep.
+#
+# `~` is the natural answer and the one macOS uses, but on Windows the home
+# directory also contains AppData, which holds tens of thousands of files no
+# scan should ever enter. It is excluded below; point this at the drive or
+# folder your projects actually live in if that is somewhere else entirely
+# (e.g. "D:/" or "D:/work").
+git_search_root = "~"
+git_max_depth = 6
+
+# Directories excluded from filesystem traversal only. Work recorded in these
+# still appears in reports.
+#
+# On macOS this list exists because a background job cannot answer a TCC
+# prompt. Windows has no TCC, but it has three problems of its own that cost
+# just as much: OneDrive's Files-On-Demand placeholders block on a network
+# fetch when something reads them, AppData and the package caches under it are
+# enormous, and Windows Search / Defender churn make their own indexes look
+# like work.
+# A fourth problem is specific to Windows and has no macOS counterpart: the
+# home directory holds a set of *legacy junctions* — "Application Data",
+# "My Documents", "Local Settings", "Recent" and friends — that point back at
+# directories already in the tree. They carry a deny ACE so enumerating them
+# fails rather than looping forever, but every one of them is a tree walked
+# twice or an error raised per run.
+#
+# On a localized Windows the shell folders exist under **both** names: this
+# machine has `Documents` and `문서`, `Desktop` and `바탕 화면`. The Korean
+# names below are what a Korean install has; install.ps1 detects the ones your
+# machine actually uses and appends them. Add your own if you install by hand.
+#
+# **Almost everything here is anchored, and it has to be.** Fragments are
+# matched as substrings of the whole path, and these are ordinary directory
+# names: an unanchored `/Templates/` matches `D:\myapp\templates`, an
+# unanchored `/Documents/` matches `D:\myapp\src\Documents`. A tree excluded by
+# accident does not report anything — it just quietly stops being scanned.
+#
+#   `~/x/`  anchors to the home directory
+#   `:/x/`  anchors to any drive root (`C:/Windows/`, `D:/Windows/`, …)
+walk_exclude = [
+    "~/AppData/",
+    "~/OneDrive/",
+    "~/iCloudDrive/",
+    "~/iCloudPhotos/",
+    "~/Documents/",
+    "~/Desktop/",
+    "~/Downloads/",
+    "~/Pictures/",
+    "~/Videos/",
+    "~/Music/",
+    # localized shell folders (ko-KR)
+    "~/문서/",
+    "~/바탕 화면/",
+    "~/사진/",
+    "~/시작 메뉴/",
+    "~/첨부 파일/",
+    # legacy compatibility junctions — these point back at directories already
+    # in the tree, so each one is a tree walked twice or an error per run
+    "~/Application Data/",
+    "~/My Documents/",
+    "~/Local Settings/",
+    "~/Start Menu/",
+    "~/Cookies/",
+    "~/Recent/",
+    "~/SendTo/",
+    "~/NetHood/",
+    "~/PrintHood/",
+    "~/Templates/",
+    "~/Searches/",
+    "~/Links/",
+    "~/Contacts/",
+    "~/Favorites/",
+    "~/Saved Games/",
+    # package caches
+    "~/scoop/",
+    "~/.nuget/",
+    "~/.gradle/",
+    "~/.m2/",
+    "~/.cache/",
+    # system trees, on whichever drive they are
+    ":/$Recycle.Bin/",
+    ":/Windows/",
+    ":/Program Files/",
+    ":/Program Files (x86)/",
+    ":/ProgramData/",
+    ":/System Volume Information/",
+    # these are unambiguous enough to leave unanchored
+    "/node_modules/",
+    "/__pycache__/",
+]
+
+# Repositories inside a skipped tree that you still want counted.
+extra_repo_roots = []
+
+# Sessions that live outside the normal tree and whose working directory
+# carries no project meaning. Each entry gets a fixed label instead.
+#
+# The macOS example lists Claude Desktop's local agent mode here. There is no
+# verified Windows equivalent, so nothing is configured by default — leaving a
+# glob that matches nothing would look like a working feature.
+
+[git]
+# Commits by these authors count as yours. **Nothing else is counted.**
+#
+# Leaving this empty is not a safe default — it is an empty report. Fill it
+# with every identity you commit under:
+#
+#   git config user.email
+#   git log --format='%ae' | sort | uniq -c | sort -rn | head
+#
+# Vendored forks in a home directory contribute hundreds of upstream commits,
+# so this list is what keeps other people's work out of your report.
+authors = []
+
+[exclude]
+# Paths never collected at all. Add client or confidential directories here —
+# a regex cannot protect what should not be gathered in the first place.
+#
+# Matched as substrings of the normalized (forward-slash, lowercased) path, so
+# surrounding slashes are safer: "/client-name/".
+paths = [
+    "/node_modules/",
+    "/.build/",
+    "/AppData/Local/Temp/",
+    # …and the summarizer's own scratch directory by name, in case TEMP has
+    # been pointed somewhere else entirely. Without this the job reports on its
+    # own summarization every night.
+    "/daily-report-summarizer/",
+    "/AppData/Local/Programs/",
+    "/AppData/Local/Packages/",
+    "/AppData/Roaming/Code/",
+    "/.codex/",
+    "/.agents/",
+    "/.claude/plugins/",
+    "/.claude/skills/",
+    "/.claude/projects/",
+    "/.git/",
+    "/.venv/",
+]
+# The summarizer runs from %LOCALAPPDATA%\Temp, so its own transcript is
+# already excluded by the rule above — that is what stops the job reporting on
+# its own summarization every night. Real work on this project still shows up.
+
+[projects]
+# Directories that hold projects rather than being one. A direct child of
+# these is a project; the container itself is not.
+#
+# If a wrapper directory shows up as a project in your reports, add it here.
+# Drive roots belong here for the common Windows habit of keeping projects at
+# `D:\something` rather than under the home directory.
+containers = [
+    "~",
+    "~/source/repos",
+    "~/dev",
+    "~/development",
+    "~/projects",
+    "~/src",
+    "C:/",
+    "D:/",
+    # The shell folders are containers, not projects — a session that ran in
+    # `~/Documents` is work in whatever is under it, not work on "Documents".
+    #
+    # Two Windows facts make this list longer than the macOS one. A localized
+    # install has both names for each folder, and OneDrive's Known Folder Move
+    # — on by default for many setups — relocates them *inside* OneDrive, so
+    # the real Documents folder is `~/OneDrive/문서`. Miss that and every
+    # PowerShell profile edit is reported as work on a project called "문서".
+    # install.ps1 resolves the paths this machine actually uses and appends
+    # them, which is more reliable than any list of guesses.
+    "~/Documents",
+    "~/Desktop",
+    "~/Downloads",
+    "~/문서",
+    "~/바탕 화면",
+    "~/OneDrive/Documents",
+    "~/OneDrive/Desktop",
+    "~/OneDrive/Pictures",
+    "~/OneDrive/문서",
+    "~/OneDrive/바탕 화면",
+    "~/OneDrive/사진",
+]
+
+# Never a project, whatever they contain.
+#
+# `~/AppData` is here for the same reason macOS lists `~/Library`: it is a
+# direct child of the home directory, so the container rule above would
+# otherwise make it a project, and editing something under it is config
+# tinkering rather than project work.
+never = [
+    "~",
+    "~/AppData",
+    # Where the native Claude Code installer puts `claude.exe`. Agents run
+    # commands from it, so sessions land there — but nothing in it is work.
+    "~/.local",
+    # `~/OneDrive` is here rather than in `containers` on purpose.
+    #
+    # As a container, every unlisted child of it became a project — and the
+    # children are not knowable in advance. This machine has a `臾몄꽌` beside
+    # its `문서`: a mojibake twin of the same folder name, really on disk,
+    # which no list of expected names would ever have contained. Listing the
+    # real shell folders as containers still works (they are listed above), and
+    # anything else under OneDrive now needs a root marker to count as a
+    # project — which is the right bar.
+    "~/OneDrive",
+    "C:/",
+    "D:/",
+]
+
+[labels]
+# Display names for project folders. Only worth setting when a folder name
+# reads badly in a report.
+#
+# rename = { ".claude" = "Tooling config", "src" = "Main app" }
+rename = {}
+
+[noise]
+# Navigation and inspection commands. Measured on real days these are about
+# three quarters of everything captured, and none of it says what was
+# accomplished.
+#
+# The PowerShell names are here as well as the POSIX ones: the agent runs
+# whichever shell the machine has, and a report full of `Get-ChildItem` says
+# no more than one full of `ls`.
+bash_command_prefixes = [
+    "ls", "ll", "cd", "pwd", "cat", "head", "tail", "echo", "which", "wc",
+    "find", "grep", "rg", "du", "df", "open", "file", "stat", "date",
+    "tree", "source", "export", "sed -n", "printf", "basename", "dirname",
+    "Get-ChildItem", "Get-Content", "Get-Location", "Set-Location",
+    "Get-Item", "Test-Path", "Select-String", "Write-Host", "Write-Output",
+    "Get-Command", "Measure-Object", "Get-Date", "dir", "type", "where",
+]
+# Commands sharing this many leading characters are treated as duplicates.
+dedupe_prefix_chars = 60
+# Truncation limits. Anything cut gets a visible " …[truncated]" marker so the
+# summarizer does not complete it from background knowledge.
+command_max_chars = 400
+prompt_max_chars = 1400
+
+[launchd]
+# The scheduled job's name. On Windows this is the Task Scheduler task name;
+# the section keeps its original name so one config file works on both
+# platforms. install.ps1 generates the task from it.
+label = "com.example.daily-report"
+
+[report]
+# Which prompt to use: prompts/<language>.md
+language = "en"
+# Target length in characters. Quiet projects get compressed to fit; busy ones
+# are not cut.
+target_chars = 5000
+
+[notion]
+# Language of the database's **property names**, fixed when the database is
+# created. Changing it afterwards renames nothing in Notion — it only makes the
+# writer look for properties that do not exist, and a failed date lookup is not
+# an error: it appends a new row every day instead of updating one.
+#
+# To change it for real: create a new database, or rename the properties in
+# Notion to match.
+schema_language = "en"
+
+[run]
+# Abort and notify if one day's processing exceeds this. A scheduled job that
+# hangs is worse than one that fails — no report, no error, no signal.
+#
+# On Windows this counts wall-clock time, not running time: there is no
+# equivalent of signal.alarm's "time the process was scheduled". The run holds
+# a no-sleep assertion for its whole duration so the two rarely differ, but a
+# forced sleep mid-run does abort the day — which the next run backfills.
+watchdog_sec = 2400
+
+[summary]
+model_timeout_sec = 900
+max_turns = 1
+# Full path to the Claude Code CLI. Leave empty to find it automatically:
+# `~/.local/bin/claude.exe` (native install), then PATH, then the npm shim.
+# Set it if the CLI lives somewhere else — a scheduled task does not inherit
+# the PATH your terminal has.
+claude_bin = ""

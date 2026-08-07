@@ -1,0 +1,32 @@
+# 자격증명 — 절대 커밋 금지
+.env
+
+# 개인 사전. "무엇이 새면 안 되는가" 목록 자체가 개인정보라, 저장소 안에
+# 들어오면 유출 방지 장치가 유출원이 된다. ~/.config/daily-report/ 에 둔다.
+*denylist*
+pii-*.txt
+
+# 설치된 예약 작업 정의 사본. 사용자명·SID·절대경로·Label 이 들어 있다.
+# 배포되는 것은 templates/ 아래의 템플릿이다.
+com.*.daily-report.plist
+com.*.daily-report.xml
+
+# 개인 설정. 배포되는 것은 config.example.toml 과
+# config.windows.example.toml 이다.
+config.toml
+
+# 수집·정제 산출물. 사용자 프롬프트 원문과 전체 파일 경로가 들어 있어
+# 프라이빗 저장소라도 남기지 않는다.
+work/
+state/
+logs/
+fixtures/
+
+# 파이썬
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# macOS 부산물
+.DS_Store

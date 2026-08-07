@@ -1,0 +1,13 @@
+{
+  "name": "daily-report",
+  "owner": {
+    "name": "daily-report contributors"
+  },
+  "plugins": [
+    {
+      "name": "daily-report",
+      "source": "./",
+      "description": "Daily work report from agent session logs into Notion, one row per day."
+    }
+  ]
+}

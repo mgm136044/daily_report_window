@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{{LABEL}}</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- caffeinate holds a power assertion for exactly as long as the
+             command it wraps runs, then releases it.
+
+             Without this the job starts on time and then freezes: a Mac with
+             Power Nap enabled cycles DarkWake → Maintenance Sleep every few
+             tens of seconds. One measured run began at 04:05:00 and did not
+             finish until 13:52 — nearly ten hours, almost all of it suspended
+             mid-collection.
+             -s prevents system sleep, -i prevents idle sleep. -->
+        <string>/usr/bin/caffeinate</string>
+        <string>-s</string>
+        <string>-i</string>
+        <!-- Absolute path: launchd does not run a login shell, and the PATH
+             below is the only one this job ever sees. -->
+        <string>{{PYTHON}}</string>
+        <!-- -u: launchd redirects stdout to a file, so Python block-buffers and
+             the log stays empty while the job runs. When it hung, the log gave
+             no clue where. Unbuffered output makes progress visible live. -->
+        <string>-u</string>
+        <string>{{PROJECT_DIR}}/run_day.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>{{PROJECT_DIR}}</string>
+
+    <!-- launchd passes almost no environment (verified: only SSH_AUTH_SOCK).
+         USER is mandatory: the Claude Code CLI looks up its credentials in the
+         login keychain by account name, and without USER it reports
+         "Not logged in" even though the user is logged in. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>USER</key>
+        <string>{{USER}}</string>
+        <key>HOME</key>
+        <string>{{HOME}}</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>TZ</key>
+        <string>{{TZ}}</string>
+        <key>LANG</key>
+        <string>en_US.UTF-8</string>
+    </dict>
+
+    <!-- 04:05: the logical day closes at 04:00, so running any earlier would
+         cut off late-night work. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>4</integer>
+        <key>Minute</key>
+        <integer>5</integer>
+    </dict>
+
+    <!-- Missed calendar runs are coalesced by launchd into exactly one
+         execution, so RunAtLoad plus the lastrun ledger is what actually
+         recovers days when the Mac was asleep or off. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>{{PROJECT_DIR}}/logs/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{PROJECT_DIR}}/logs/stderr.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

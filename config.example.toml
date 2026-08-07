@@ -1,0 +1,179 @@
+# daily-report configuration
+#
+# Copy to config.toml and edit. The defaults below work as-is; the only value
+# you must set is `git.authors`.
+#
+#   cp config.example.toml config.toml
+#
+# config.toml is gitignored — it describes your machine and your work.
+
+[day]
+# Where one "day" ends. 4 means work done at 2 a.m. belongs to the previous
+# day, which is usually what people mean. The job runs just after this hour.
+boundary_hour = 4
+
+# Reporting timezone. Omit to follow the system timezone, which is almost
+# always right. Set it only if reports should follow a fixed zone regardless
+# of where the machine is.
+# timezone_offset_hours = 9
+
+[sources]
+claude_projects_dir = "~/.claude/projects"
+
+# Codex CLI rollout logs. If Codex is not installed this is skipped silently —
+# nothing to configure.
+codex_sessions_dir = "~/.codex/sessions"
+
+
+# Where to look for git repositories, and how deep.
+git_search_root = "~"
+git_max_depth = 6
+
+# Directories excluded from filesystem traversal only. Work recorded in these
+# still appears in reports — this list exists because a background launchd job
+# cannot answer a permission prompt, so opening a protected or cloud-backed
+# directory can block forever instead of failing. It never reproduces from a
+# terminal, where the permission is already inherited.
+walk_exclude = [
+    "/Library/Mobile Documents/",
+    "/Documents/",
+    "/Desktop/",
+    "/Downloads/",
+    "/Pictures/",
+    "/Movies/",
+    "/Music/",
+    "/Applications/",
+    "/.Trash/",
+]
+
+# Repositories inside a skipped tree that you still want counted.
+extra_repo_roots = []
+
+# Sessions that live outside the normal tree and whose working directory
+# carries no project meaning. Claude's local agent mode is the case that
+# exists today: its transcripts sit under Application Support and their `cwd`
+# points at a scratch folder, so the usual project rollup cannot place them.
+# Each entry gets a fixed label instead.
+#
+# Work that ran *inside* the agent-mode VM is not reachable — it lives in a
+# disk image — so only the conversation with the agent is collected.
+[[sources.extra_session_globs]]
+glob = "~/Library/Application Support/Claude/local-agent-mode-sessions/**/.claude/projects/**/*.jsonl"
+label = "Claude Desktop (agent mode)"
+
+[git]
+# Commits by these authors count as yours. **Nothing else is counted.**
+#
+# Leaving this empty is not a safe default — it is an empty report. Fill it
+# with every identity you commit under:
+#
+#   git config user.email                 # the one you use most
+#   git log --format='%ae' | sort | uniq -c | sort -rn | head
+#
+# Vendored forks in a home directory contribute hundreds of upstream commits,
+# so this list is what keeps other people's work out of your report.
+authors = []
+
+[exclude]
+# Paths never collected at all. Add client or confidential directories here —
+# a regex cannot protect what should not be gathered in the first place.
+#
+# Matched as substrings, so surrounding slashes are safer: "/client-name/".
+paths = [
+    "/node_modules/",
+    "/.build/",
+    "/Library/Caches/",
+    "/Library/Developer/",
+    "/Library/Application Support/",
+    "/Library/Containers/",
+    "/.codex/",
+    "/.agents/",
+    "/.claude/plugins/",
+    "/.claude/skills/",
+    "/.claude/projects/",
+    "/private/tmp/",
+    "/tmp/",
+    "/.git/",
+    "/.venv/",
+]
+# The summarizer runs from /private/tmp, so its own transcript is already
+# excluded by the rule above. Real work on this project still shows up.
+
+[projects]
+# Directories that hold projects rather than being one. A direct child of
+# these is a project; the container itself is not.
+#
+# If a wrapper directory shows up as a project in your reports, add it here.
+containers = [
+    "~",
+    "~/development",
+    "~/projects",
+    "~/src",
+    "~/Downloads",
+    "~/Desktop",
+    "~/Documents",
+    "~/Library/Mobile Documents/com~apple~CloudDocs",
+    "/",
+]
+
+# Never a project, whatever they contain.
+never = [
+    "~",
+    "/",
+    "~/Library",
+]
+
+[labels]
+# Display names for project folders. Only worth setting when a folder name
+# reads badly in a report.
+#
+# rename = { ".claude" = "Tooling config", "src" = "Main app" }
+rename = {}
+
+[noise]
+# Navigation and inspection commands. Measured on real days these are about
+# three quarters of everything captured, and none of it says what was
+# accomplished.
+bash_command_prefixes = [
+    "ls", "ll", "cd", "pwd", "cat", "head", "tail", "echo", "which", "wc",
+    "find", "grep", "rg", "du", "df", "open", "file", "stat", "date",
+    "tree", "source", "export", "sed -n", "printf", "basename", "dirname",
+]
+# Commands sharing this many leading characters are treated as duplicates.
+dedupe_prefix_chars = 60
+# Truncation limits. Anything cut gets a visible " …[truncated]" marker so the
+# summarizer does not complete it from background knowledge.
+command_max_chars = 400
+prompt_max_chars = 1400
+
+[launchd]
+# Must match the plist filename. install.sh generates both.
+label = "com.example.daily-report"
+
+[report]
+# Which prompt to use: prompts/<language>.md
+language = "en"
+# Target length in characters. Quiet projects get compressed to fit; busy ones
+# are not cut.
+target_chars = 5000
+
+[notion]
+# Language of the database's **property names**, fixed when the database is
+# created. Changing it afterwards renames nothing in Notion — it only makes the
+# writer look for properties that do not exist, and a failed date lookup is not
+# an error: it appends a new row every day instead of updating one.
+#
+# To change it for real: create a new database, or rename the properties in
+# Notion to match.
+schema_language = "en"
+
+[run]
+# Abort and notify if one day's processing exceeds this. A scheduled job that
+# hangs is worse than one that fails — no report, no error, no signal.
+watchdog_sec = 2400
+
+[summary]
+model_timeout_sec = 900
+max_turns = 1
+# Full path to the Claude Code CLI. Leave empty to find it on PATH.
+claude_bin = ""

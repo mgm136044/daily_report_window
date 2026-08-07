@@ -108,31 +108,60 @@ class Platform:
         """(registered, human-readable detail)"""
         raise Unsupported(self._message("스케줄러 조회"))
 
+    # Answering rather than raising, so `doctor.py` stays importable: its whole
+    # job is to explain why nothing is running, and a diagnostic tool that
+    # cannot start on the machine with the problem is no use. An empty path
+    # reads as "not registered", which is the truth here.
     def scheduler_path(self, label: str) -> str:
         """Where the scheduler's own definition of this job lives."""
-        raise Unsupported(self._message("스케줄러 경로"))
+        return ""
 
     def scheduler_repair(self, label: str) -> str:
         """The command that re-registers the job, for doctor.py to print."""
-        raise Unsupported(self._message("스케줄러 복구 안내"))
+        return self._message("스케줄러 등록")
 
     # --- the CLI child ---------------------------------------------------
+    #
+    # These three answer generically rather than raising, unlike the scheduler
+    # and the lock above. The difference is not politeness: `summarize.py`
+    # resolves the PATH at *import* time, so raising here made the module
+    # unimportable on an unsupported platform — and with it the whole test
+    # suite, which stopped collecting rather than reporting. The collection and
+    # processing core really is portable, and its tests should run anywhere.
+    #
+    # `require_supported()` remains the gate. Refusing to start belongs there,
+    # once, where the message can say what is actually missing.
     def default_path(self) -> str:
         """PATH the summarizer's child process gets, built rather than inherited."""
-        raise Unsupported(self._message("PATH 구성"))
+        return os.defpath.lstrip(os.pathsep)
 
     def child_env(self) -> dict[str, str]:
         """Environment for the Claude Code CLI child process."""
-        raise Unsupported(self._message("자식 프로세스 환경"))
+        home = os.path.expanduser("~")
+        return {
+            "HOME": home,
+            "PATH": self.default_path(),
+            "USER": os.environ.get("USER") or os.path.basename(home),
+            "LANG": os.environ.get("LANG", "en_US.UTF-8"),
+        }
 
     def claude_argv(self, configured: str = "") -> list[str]:
         """How to invoke the Claude Code CLI, resolved to something runnable."""
-        raise Unsupported(self._message("CLI 실행 방법"))
+        return [configured or "claude"]
 
     # --- filesystem ------------------------------------------------------
     def restrict(self, path: str, is_dir: bool) -> None:
-        """Narrow a path so other accounts on the machine cannot read it."""
-        raise Unsupported(self._message("권한 설정"))
+        """Narrow a path so other accounts on the machine cannot read it.
+
+        POSIX modes are the default because they are correct wherever they
+        exist, and because the alternative — raising — travels through
+        `write_state()`, which runs on every completed day. Windows overrides
+        this; it has no POSIX mode to set.
+        """
+        try:
+            os.chmod(path, 0o700 if is_dir else 0o600)
+        except OSError:
+            pass
 
     def scratch_dir(self, name: str) -> str:
         """A temp directory the summarizer can run from."""

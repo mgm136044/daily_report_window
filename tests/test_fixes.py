@@ -31,11 +31,16 @@ import summarize  # noqa: E402
 HOME = os.path.expanduser("~")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WINDOWS = os.name == "nt"
+MACOS = sys.platform == "darwin"
 
 # Some defects are a property of one operating system's paths or APIs. Skipping
 # is honest about that; asserting the other platform's rule everywhere would
 # make the suite pass by testing nothing.
-macos_only = pytest.mark.skipif(WINDOWS, reason="macOS 경로/API 규칙")
+#
+# `macos_only` tests darwin, not "not Windows". Written the lazy way it also
+# selected Linux, where the macOS home layout and its cache directories do not
+# exist — so the Linux runner failed on assertions that were never about Linux.
+macos_only = pytest.mark.skipif(not MACOS, reason="macOS 경로/API 규칙")
 windows_only = pytest.mark.skipif(not WINDOWS, reason="Windows 경로/API 규칙")
 
 
@@ -237,8 +242,12 @@ def test_child_env_carries_the_identity_the_cli_needs():
         # before running any code of its own.
         assert "system32" in env["PATH"].lower()
         assert env.get("SystemRoot")
-    else:
+    elif MACOS:
         assert "/opt/homebrew/bin" in env["PATH"]
+    else:
+        # unsupported platform: the environment is generic, and the refusal to
+        # run belongs to require_supported() rather than to this
+        assert env["PATH"]
 
 def test_missing_env_file_raises_readable_error():
     try:
@@ -864,6 +873,43 @@ def test_doctor_judges_the_day_that_ran_not_the_last_good_one():
 
 
 # --- 자원 경로와 데이터 경로 -----------------------------------------------
+
+def test_an_unsupported_platform_refuses_at_the_gate_not_at_import():
+    """Raising from a module-level constant took the test suite down with it.
+
+    `summarize.py` resolves the child PATH at import time. When the base
+    Platform raised there, importing the module on Linux failed — so the suite
+    stopped *collecting* rather than reporting, and a contributor on a
+    platform this tool does not schedule on could not run even the portable
+    tests. The refusal belongs in require_supported(), once, where the message
+    can say what is actually missing.
+    """
+    import importlib
+    import platform_support as ps
+
+    generic = ps.Platform()
+    assert generic.default_path()
+    assert generic.child_env().get("PATH")
+    assert generic.claude_argv() == ["claude"]
+    assert not generic.supported
+
+    # doctor has to stay importable on the machine that has the problem —
+    # a diagnostic that cannot start is no diagnostic
+    assert generic.scheduler_path("label") == ""
+    assert generic.scheduler_repair("label")
+
+    # and the things that genuinely cannot be faked still refuse
+    for call in (lambda: generic.acquire_lock("x"),
+                 lambda: generic.watchdog(1),
+                 lambda: generic.notify("t", "m"),
+                 lambda: generic.scheduler_status("label")):
+        try:
+            call()
+        except ps.Unsupported:
+            continue
+        raise AssertionError("스케줄러·잠금·알림이 조용히 통과했다")
+
+    importlib.reload(ps)  # leave the module as we found it
 
 def test_paths_are_identical_when_running_from_a_checkout():
     """The split must be invisible until something is actually frozen.

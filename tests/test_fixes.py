@@ -43,6 +43,14 @@ MACOS = sys.platform == "darwin"
 macos_only = pytest.mark.skipif(not MACOS, reason="macOS 경로/API 규칙")
 windows_only = pytest.mark.skipif(not WINDOWS, reason="Windows 경로/API 규칙")
 
+# The lock and the watchdog are the runtime shell, and a platform without one
+# raises rather than pretending. Tests that drive them belong to the platforms
+# that have one — the *invariants* about them (see the Timeout/OSError test)
+# still run everywhere, because that is where the interesting defect was.
+has_runtime_shell = pytest.mark.skipif(
+    not platform_support.PLATFORM.supported,
+    reason=f"{platform_support.PLATFORM.name} 에는 런타임 셸(잠금·워치독)이 없다")
+
 
 # --- sanitizer -------------------------------------------------------------
 
@@ -310,6 +318,7 @@ def test_repo_discovery_finishes_quickly(configured, home, git_project):
     assert str(git_project) in repos, f"합성 저장소를 못 찾음: {repos}"
     assert elapsed < 60, f"저장소 탐색이 {elapsed:.0f}초 — 무한 대기 회귀 의심"
 
+@has_runtime_shell
 def test_watchdog_raises_on_timeout():
     import time as _time
     try:
@@ -329,10 +338,17 @@ def test_watchdog_exception_is_not_an_oserror():
     was caught, logged as one more unreadable file, and discarded. The watchdog
     is one-shot: after that the stalled run continued to completion, wrote a
     report, and recorded the date as done.
+
+    Unmarked on purpose: this is a property of the exception class, not of any
+    platform's implementation, and it is the half where the defect actually
+    lived. It should fail on a machine that cannot even run a watchdog.
     """
     assert not issubclass(platform_support.Timeout, OSError), \
         "워치독 예외가 OSError 라서 수집기 예외 처리에 먹힌다"
 
+@has_runtime_shell
+def test_a_firing_watchdog_is_not_absorbed_by_the_collector():
+    """The same defect, observed rather than reasoned about."""
     caught_by_collector = False
     try:
         with run_day.Watchdog(1):
@@ -347,6 +363,7 @@ def test_watchdog_exception_is_not_an_oserror():
         pass
     assert not caught_by_collector, "워치독 예외가 `except OSError` 에 흡수됐다"
 
+@has_runtime_shell
 def test_watchdog_is_cleared_after_success():
     """A watchdog left armed kills the *next* day's run, not this one."""
     if WINDOWS:
@@ -1279,6 +1296,7 @@ def test_git_is_invoked_without_locale_decoding():
         assert "text=True" not in code, f"{name}: 로케일 디코딩이 남아 있다"
         assert 'decode("utf-8", errors="replace")' in code
 
+@has_runtime_shell
 def test_the_run_lock_is_exclusive():
     """A wake-triggered run must not race the scheduled one."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -1292,6 +1310,7 @@ def test_the_run_lock_is_exclusive():
         finally:
             first.close()
 
+@has_runtime_shell
 def test_an_unopenable_lock_is_not_reported_as_already_running():
     """`None` from acquire_lock means one thing: another run holds it.
 

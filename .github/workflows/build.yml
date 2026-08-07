@@ -45,6 +45,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+
+      # The tool itself needs nothing but the standard library, which is the
+      # whole point of it — pytest is the one thing the *tests* need, and it is
+      # installed through `python -m pip` rather than `pip` so it lands in the
+      # same interpreter that `python -m pytest` will use. On the macOS runner
+      # those are not always the same executable.
+      - name: Install the test runner
+        run: python -m pip install --upgrade pip pytest
+
       - name: Run the test suite
         run: python -X utf8 -m pytest tests/ -q
 

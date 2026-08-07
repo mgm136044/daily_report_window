@@ -65,6 +65,57 @@ Windows (no elevation required):
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
+<details>
+<summary><b>Windows, from a clean clone — the whole thing</b></summary>
+
+Needed first: Windows 10/11, Python 3.11+ (`tomllib` starts there), git, and
+the Claude Code CLI **logged in** — without it collection still works but no
+report is written. No administrator rights at any point.
+
+**1.** Clone and run the installer.
+
+```bash
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+It stops after five of its nine steps, because the next one needs a token only
+you can issue. Before stopping it asks three things: the report language, the
+email addresses you commit under, and the root to search for repositories —
+counting the repositories under each drive so the answer is measured rather
+than guessed. `~` is usually the wrong answer on Windows.
+
+**2.** Create the Notion connection — [docs/notion-setup.md](docs/notion-setup.md).
+Two details cause most failures: it must be an **internal connection's
+installation token**, not a personal access token (those expire, and the job
+then dies silently), and the parent page must be shared with that connection
+(`•••` → Add connections).
+
+**3.** Give it the token. Either fill `DAILY_REPORT_NOTION_TOKEN` and
+`DAILY_REPORT_PARENT_PAGE_URL` in `.env` by hand — leaving
+`DAILY_REPORT_DATABASE_ID` empty, the installer fills it — or use the wizard:
+
+```bash
+python setup_gui.py
+```
+
+The wizard exists mostly for this field. A terminal keeps what you type; a GUI
+field does not, and this tool exists because session logs keep everything.
+
+**4.** Run the installer again. It creates the database, writes its ID back,
+registers the 04:05 task, adds the Start Menu shortcut, links the skill, and
+finishes with `doctor.py`. Re-running is always safe.
+
+**5.** Confirm.
+
+```bash
+python doctor.py
+```
+
+The first scheduled run is the next 04:05. Installing does not reconstruct the
+fortnight before it existed — only the most recent closed day is generated.
+
+</details>
+
 It runs in two passes, because the middle step needs a token only you can issue.
 
 **Pass 1** checks the platform, finds a Python ≥ 3.11, creates `config.toml`
@@ -134,15 +185,27 @@ python3 doctor.py                  # is it working, and if not, why
 Re-running a date overwrites its row rather than adding one. If a report reads
 badly, run it again.
 
-On Windows there are two windows as well, both plain tkinter — no dependency,
-because "there is nothing to install" is worth more than a nicer toolkit:
+### Windows: opening it after installing
+
+**Look for "하루 마감 보고서" in the Start Menu** — `install.ps1` puts it there.
+It opens the status window: last run, next run, the last fourteen days as a
+strip, and buttons for diagnostics, regenerating a day, the logs, and Notion.
+It launches through `pythonw`, so no console trails behind it.
+
+To start it by hand:
 
 ```bash
-python status_window.py
+pythonw -X utf8 status_window.py
 ```
 
-Last run, next run, the last fourteen days as a strip, and buttons for the
-commands above. `install.ps1` puts a Start Menu shortcut to it.
+`pythonw`, not `python` — the latter leaves an empty console window behind the
+GUI.
+
+Both windows are plain tkinter, no dependency, because "there is nothing to
+install" is worth more than a nicer toolkit.
+
+The setup wizard gets no shortcut; it is a one-time thing, and if you need it
+again you run it:
 
 ```bash
 python setup_gui.py

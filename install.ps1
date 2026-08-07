@@ -432,7 +432,9 @@ try {
     $link.TargetPath       = $pythonw
     $link.Arguments        = "-X utf8 `"$PSScriptRoot\status_window.py`""
     $link.WorkingDirectory = $PSScriptRoot
-    $link.Description      = "하루 마감 보고서 — 상태 확인과 진단"
+    # No em-dash: the shortcut's Description travels through a COM interface
+    # that drops it to the ANSI codepage, and it shows up as "?" in the tooltip.
+    $link.Description      = "하루 마감 보고서 상태 확인과 진단"
     $link.Save()
     Ok "$shortcut"
 } catch {

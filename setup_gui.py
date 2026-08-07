@@ -145,12 +145,28 @@ def write_env(token: str, parent_url: str) -> None:
 
 
 def installer_argv(language: str, authors: str, search_root: str) -> list[str]:
-    return ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    """Drive install.ps1, telling it which layout it is installing into.
+
+    A packaged build has no python.exe and no run_day.py, so the scheduled task
+    and the shortcut have to point at the executables instead. Those two paths
+    are passed as parameters rather than handled by a second installer: the
+    steps that change the machine were verified once, and two implementations
+    of them would drift until one was wrong.
+    """
+    argv = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
             "-File", paths.resource("install.ps1"),
             "-Language", language,
             "-Authors", authors,
             "-SearchRoot", search_root,
             "-NonInteractive"]
+    if paths.bundled():
+        gui = os.path.abspath(sys.executable)
+        console = os.path.join(os.path.dirname(gui), "daily-report.exe")
+        argv += ["-AppExe", console if os.path.exists(console) else gui,
+                 "-AppGuiExe", gui,
+                 # never inside the bundle: it is replaced on upgrade
+                 "-DataDir", paths.data_root()]
+    return argv
 
 
 # --------------------------------------------------------------------- UI ---

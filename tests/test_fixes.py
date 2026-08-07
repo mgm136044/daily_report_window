@@ -1053,6 +1053,36 @@ def test_ci_runs_the_suite_on_macos_too():
     # and the oldest interpreter tomllib exists in
     assert '"3.11"' in workflow, "최소 지원 파이썬이 CI 에서 돌지 않는다"
 
+def test_uninstalling_takes_the_scheduled_task_with_it():
+    """A removed program that leaves its task behind fails every night.
+
+    The task does not stop when the executable it points at is deleted — it
+    fires at 04:05, fails to start, and records that, forever, somewhere nobody
+    thinks to look. The installer therefore runs `uninstall` *before* removing
+    files, and the command leaves the user's configuration and ledger alone so
+    a reinstall keeps its existing Notion database instead of creating a
+    second one.
+    """
+    script = open(os.path.join(ROOT, "installer.iss"), encoding="utf-8").read()
+    assert "[UninstallRun]" in script
+    assert 'Parameters: "uninstall"' in script
+    assert "waituntilterminated" in script, "파일 삭제와 경쟁할 수 있다"
+
+    source = open(os.path.join(ROOT, "cli.py"), encoding="utf-8").read()
+    assert "Unregister-ScheduledTask" in source
+    assert "uninstall" in source.split("COMMANDS = ")[1].split(")")[0]
+    # data survives on purpose
+    assert "data_root()" in source.split("def remove_installation")[1]
+
+def test_the_installer_stays_per_user():
+    """The task must run under the user's own interactive token — that is the
+    only thing that can decrypt the CLI's credentials. An installer that asked
+    for administrator would invite a machine-wide install that cannot work."""
+    script = open(os.path.join(ROOT, "installer.iss"), encoding="utf-8").read()
+    assert "PrivilegesRequired=lowest" in script
+    assert "{localappdata}\\Programs" in script
+    assert "{pf}" not in script and "{commonpf}" not in script
+
 def test_the_release_pipeline_refuses_to_ship_unsigned():
     """An unsigned executable is not a neutral outcome — SmartScreen makes it
     harder to install than the clone it was meant to replace. The rule belongs
@@ -1370,7 +1400,8 @@ def test_scheduled_task_template_is_well_formed_xml():
                 encoding="utf-8").read()
     filled = (body.replace("{{LABEL}}", "com.example.daily-report")
                   .replace("{{PROJECT_DIR}}", r"C:\daily-report")
-                  .replace("{{PYTHON}}", r"C:\Python\pythonw.exe")
+                  .replace("{{COMMAND}}", r"C:\Python\pythonw.exe")
+                  .replace("{{ARGUMENTS}}", "-X utf8 -u run_day.py --log")
                   .replace("{{USER_SID}}", "S-1-5-21-0-0-0-1000")
                   .replace("{{START_BOUNDARY}}", "2020-01-01T04:05:00"))
     try:
@@ -1388,8 +1419,34 @@ def test_scheduled_task_template_has_no_concrete_values():
     assert not _re.search(r"S-1-5-21-(?!\{\{)\d", body), "실제 SID 가 남아 있다"
     assert not _re.search(r"[A-Za-z]:\\Users\\(?!\{\{)[A-Za-z0-9._-]+", body), \
         "실제 홈 경로가 남아 있다"
-    assert {"LABEL", "PROJECT_DIR", "PYTHON", "USER_SID", "START_BOUNDARY"} <= \
-        set(_re.findall(r"\{\{(\w+)\}\}", body))
+    assert {"LABEL", "PROJECT_DIR", "COMMAND", "ARGUMENTS",
+            "USER_SID", "START_BOUNDARY"} <= set(_re.findall(r"\{\{(\w+)\}\}", body))
+
+@windows_only
+def test_the_task_command_is_not_hardcoded_to_an_interpreter():
+    """A packaged install has no python.exe and no run_day.py.
+
+    The template used to hardcode `-X utf8 -u "<dir>\\run_day.py" --log`, so a
+    frozen build would have registered a task pointing at files that are not
+    there — and Task Scheduler reports that as a start failure at 04:05, not at
+    install time. Both the command and its arguments are now filled in by
+    install.ps1, which takes them from `-AppExe` when one is supplied.
+    """
+    import re as _re
+    body = open(os.path.join(ROOT, "templates", "schtasks.xml.template"),
+                encoding="utf-8").read()
+    action = body[body.index("<Actions"):]
+    # comments stripped: they are allowed to *describe* the source layout
+    action = _re.sub(r"<!--.*?-->", "", action, flags=_re.S)
+    assert "run_day.py" not in action, "작업 정의에 .py 경로가 박혀 있다"
+    assert "<Command>{{COMMAND}}</Command>" in action
+    assert "<Arguments>{{ARGUMENTS}}</Arguments>" in action
+
+    script = open(os.path.join(ROOT, "install.ps1"), encoding="utf-8-sig").read()
+    assert "$AppExe" in script and "$AppGuiExe" in script
+    # the frozen branch must not reach for an interpreter it does not have
+    frozen = script[script.index("if ($Frozen) {"):]
+    assert '$TaskArguments = "run --log"' in frozen
 
 @windows_only
 def test_scheduled_task_survives_a_machine_that_was_off():
@@ -1422,14 +1479,24 @@ def test_scheduled_task_runs_under_an_interactive_token():
 def test_scheduled_task_keeps_its_output():
     """Task Scheduler has no StandardOutPath; an Exec action's output is lost.
 
-    -u so a hung run still shows how far it got, -X utf8 because every message
-    is Korean, --log because pythonw.exe has no stdout at all.
+    `--log` because pythonw.exe has no stdout at all, `-u` so a hung run still
+    shows how far it got, and UTF-8 because every message is Korean.
+
+    Checked in install.ps1 rather than the template: the arguments moved there
+    when the packaged layout arrived, since a frozen build reaches the same
+    three properties by a different route — `run --log` on the command line and
+    the other two as PyInstaller runtime options, because it has no command
+    line to put them on.
     """
-    body = open(os.path.join(ROOT, "templates", "schtasks.xml.template"),
-                encoding="utf-8").read()
-    assert "--log" in body
-    assert "-u" in body and "-X utf8" in body
-    assert "run_day.py" in body
+    script = open(os.path.join(ROOT, "install.ps1"), encoding="utf-8-sig").read()
+    source_branch = script[script.index("} else {"):script.index("# ------------------------------------------------------------------ claude ---")]
+    assert "--log" in script
+    assert "-u" in script and "-X utf8" in script
+    assert "run_day.py" in script, "소스 설치가 스크립트를 가리키지 않는다"
+
+    spec = open(os.path.join(ROOT, "daily-report.spec"), encoding="utf-8").read()
+    assert '("X utf8", None, "OPTION")' in spec and '("u", None, "OPTION")' in spec, \
+        "동결 빌드에서 두 플래그가 사라진다"
 
 @windows_only
 def test_installer_is_utf8_with_a_bom():
@@ -1583,7 +1650,16 @@ def test_the_installer_produces_a_config_that_parses():
             raw = handle.read()
         assert not raw.startswith(b"\xef\xbb\xbf"), "BOM 이 붙어 tomllib 이 거부한다"
 
+        # `label` is not unique in this file: every extra_session_globs entry
+        # has one, and they come first. Reading the first match named the
+        # scheduled task "Claude Desktop (agent mode)" — which registers fine,
+        # runs fine, and is findable only by someone who already suspects it.
+        assert "작업 이름: " in output, output[-2000:]
+        named = output.split("작업 이름: ")[1].splitlines()[0].strip()
+        assert named.startswith("com."), f"작업 이름이 엉뚱한 label 을 집었다: {named}"
+
         cfg = tomllib.loads(raw.decode("utf-8"))
+        assert named == cfg["launchd"]["label"]
         assert cfg["git"]["authors"] == ["me@example.com"]
         assert cfg["report"]["language"] == "ko"
         assert cfg["sources"]["git_search_root"] == sandbox.replace("\\", "/")
@@ -1628,9 +1704,14 @@ def test_installer_writes_config_without_a_bom():
     """
     body = open(os.path.join(ROOT, "install.ps1"), encoding="utf-8-sig").read()
     assert "UTF8Encoding($false)" in body, "BOM 없는 쓰기 헬퍼가 없습니다"
-    for target in ('"config.toml"', '".env"'):
-        assert f"Write-Utf8NoBom (Join-Path $PSScriptRoot {target})" in body, \
+    # Both now go through $ConfigPath / $EnvPath, which point at $DataDir —
+    # not at the script's own directory, which in a packaged install is inside
+    # the bundle and is replaced wholesale on upgrade.
+    for target in ("$ConfigPath", "$EnvPath"):
+        assert f"Write-Utf8NoBom {target}" in body, \
             f"{target} 이 BOM 없이 기록되지 않습니다"
+    assert '$ConfigPath = Join-Path $DataDir "config.toml"' in body
+    assert '$EnvPath    = Join-Path $DataDir ".env"' in body
 
 @windows_only
 def test_output_redirection_writes_utf8_and_rotates():

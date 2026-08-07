@@ -43,6 +43,7 @@ ALLOW = [
     "gui.py",
     "paths.py",
     "daily-report.spec",
+    "installer.iss",
     ".github/workflows/*",
     "collect.py",
     "collect_codex.py",

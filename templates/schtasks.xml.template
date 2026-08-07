@@ -97,12 +97,23 @@
            (An XML comment may not contain two consecutive hyphens, which is
            why the flag is named here in prose rather than written out. Task
            Scheduler rejects the whole definition as malformed if it does.) -->
-      <Command>{{PYTHON}}</Command>
-      <!-- -u: without it Python block-buffers into the redirected log, which
-             stays empty while the job runs. When it hung, the log gave no clue
-             where.
-           -X utf8: every message this tool prints is Korean. -->
-      <Arguments>-X utf8 -u "{{PROJECT_DIR}}\run_day.py" --log</Arguments>
+      <Command>{{COMMAND}}</Command>
+      <!-- Filled in by install.ps1, because the two layouts differ here. A
+           source checkout runs pythonw against the script; a packaged install
+           has no python.exe and no script at all, only the executable, and a
+           hardcoded interpreter would register a task that cannot start —
+           reported by Task Scheduler at 04:05, not at install time.
+
+           The source form also carries -u, because a buffered log is empty
+           exactly while someone is reading it, and the UTF-8 flag, because
+           every message this tool prints is Korean. The frozen build has no
+           command line to put those on and carries them as PyInstaller
+           runtime options instead.
+
+           (An XML comment may not contain two consecutive hyphens, which is
+           why the flags are described here rather than written out. Task
+           Scheduler rejects the whole definition as malformed if it does.) -->
+      <Arguments>{{ARGUMENTS}}</Arguments>
       <WorkingDirectory>{{PROJECT_DIR}}</WorkingDirectory>
     </Exec>
   </Actions>

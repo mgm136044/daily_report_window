@@ -33,8 +33,31 @@ param(
     [string] $Language   = "",
     [string] $Authors    = "",
     [string] $SearchRoot = "",
-    [switch] $NonInteractive
+    [switch] $NonInteractive,
+
+    # Set by the packaged build. A frozen install has no python.exe and no
+    # run_day.py — only the executables — so the scheduled task and the Start
+    # Menu shortcut have to point at those instead.
+    #
+    # Passing them in rather than writing a second installer is deliberate.
+    # Task registration, the icacls narrowing and the skill junction were
+    # verified once on a real machine; a parallel implementation for the
+    # packaged case would have to be verified again, and the two would drift.
+    [string] $AppExe     = "",
+    [string] $AppGuiExe  = "",
+
+    # Where config.toml, .env, state/, work/ and logs/ go. A source checkout
+    # keeps them beside the code; a packaged install must not, because the
+    # bundle directory is replaced wholesale on upgrade and everything written
+    # into it — including the ledger and the Notion database id — would go with
+    # it. Defaults to the script's own directory, which is the checkout case.
+    [string] $DataDir    = ""
 )
+
+$Frozen = -not [string]::IsNullOrWhiteSpace($AppExe)
+if (-not $DataDir) { $DataDir = $PSScriptRoot }
+$ConfigPath = Join-Path $DataDir "config.toml"
+$EnvPath    = Join-Path $DataDir ".env"
 
 $ErrorActionPreference = 'Stop'
 Set-Location -Path $PSScriptRoot
@@ -63,8 +86,8 @@ function Write-Utf8NoBom($path, $text) {
 }
 
 function Read-EnvValue($key) {
-    if (-not (Test-Path .env)) { return "" }
-    foreach ($line in (Get-Content .env -Encoding UTF8)) {
+    if (-not (Test-Path $EnvPath)) { return "" }
+    foreach ($line in (Get-Content $EnvPath -Encoding UTF8)) {
         $trimmed = $line.Trim()
         if ($trimmed.StartsWith("$key=")) {
             return $trimmed.Substring($key.Length + 1).Trim()
@@ -84,6 +107,14 @@ Ok "$osName  (PowerShell $($PSVersionTable.PSVersion))"
 # ------------------------------------------------------------------ python ---
 Step "2/9  Python 확인"
 $python = ""
+if ($Frozen) {
+    # Nothing to find: the interpreter is inside the executable.
+    $python  = $AppExe
+    $pythonw = if ($AppGuiExe) { $AppGuiExe } else { $AppExe }
+    Ok "패키지 빌드 — 별도 Python 이 필요 없습니다"
+    Ok "  실행 파일: $AppExe"
+}
+if (-not $Frozen) {
 # `py -3` first: the bare `python` on PATH is usually the Microsoft Store stub,
 # which resolves and then refuses to run.
 foreach ($candidate in @(@('py', '-3'), @('python'), @('python3'))) {
@@ -110,6 +141,21 @@ if (-not (Test-Path $pythonw)) {
     $pythonw = $python
     Warn "pythonw.exe 가 없어 python.exe 로 등록합니다 (매일 04:05 에 콘솔 창이 잠깐 뜹니다)"
 }
+}
+
+# What the scheduled task and the shortcut will actually invoke. One place, so
+# the frozen and source layouts diverge here and nowhere else.
+if ($Frozen) {
+    $TaskCommand   = $AppExe
+    $TaskArguments = "run --log"
+    $GuiCommand    = if ($AppGuiExe) { $AppGuiExe } else { $AppExe }
+    $GuiArguments  = ""
+} else {
+    $TaskCommand   = $pythonw
+    $TaskArguments = "-X utf8 -u `"$PSScriptRoot\run_day.py`" --log"
+    $GuiCommand    = $pythonw
+    $GuiArguments  = "-X utf8 `"$PSScriptRoot\status_window.py`""
+}
 
 # ------------------------------------------------------------------ claude ---
 Step "3/9  Claude Code CLI 확인"
@@ -132,7 +178,7 @@ if ($claudeBin) {
 
 # ------------------------------------------------------------------ config ---
 Step "4/9  config.toml"
-if (Test-Path config.toml) {
+if (Test-Path $ConfigPath) {
     Ok "이미 있음 — 건드리지 않습니다"
 } else {
     $language = Ask '보고서 언어 (ko/en)' 'ko' $Language
@@ -143,7 +189,7 @@ if (Test-Path config.toml) {
     if (-not $slug) { $slug = 'user' }
     $label = "com.$slug.daily-report"
 
-    $text = Get-Content -Raw -Encoding UTF8 config.windows.example.toml
+    $text = Get-Content -Raw -Encoding UTF8 (Join-Path $PSScriptRoot "config.windows.example.toml")
     $text = $text.Replace('label = "com.example.daily-report"', "label = `"$label`"")
     $text = [regex]::Replace($text, '(?m)^language = "en"$', "language = `"$language`"")
     $text = [regex]::Replace($text, '(?m)^schema_language = "en"$', "schema_language = `"$language`"")
@@ -151,7 +197,7 @@ if (Test-Path config.toml) {
         $escaped = $claudeBin.Replace('\', '\\')
         $text = $text.Replace('claude_bin = ""', "claude_bin = `"$escaped`"")
     }
-    Write-Utf8NoBom (Join-Path $PSScriptRoot "config.toml") $text
+    Write-Utf8NoBom $ConfigPath $text
     Ok "config.windows.example.toml -> config.toml  (언어 $language, Label $label)"
 
     # Ask the machine where its shell folders really are, rather than guessing.
@@ -191,7 +237,7 @@ if (Test-Path config.toml) {
     }
     $addedContainers = @()
     $addedWalk = @()
-    $text = Get-Content -Raw -Encoding UTF8 config.toml
+    $text = Get-Content -Raw -Encoding UTF8 $ConfigPath
     foreach ($resolved in $shellFolders) {
         $forward = $resolved.Replace('\', '/')
         if ($text -notmatch [regex]::Escape("`"$forward`"")) {
@@ -221,7 +267,7 @@ if (Test-Path config.toml) {
             $text = $text.Replace('    "%OneDrive%/",', "    `"%OneDrive%/`",`r`n    `"$forward/`",")
         }
     }
-    Write-Utf8NoBom (Join-Path $PSScriptRoot "config.toml") $text
+    Write-Utf8NoBom $ConfigPath $text
     if ($addedCloud.Count -gt 0) {
         Ok "클라우드 폴더 추가: $($addedCloud -join ', ')"
     }
@@ -242,7 +288,7 @@ if (Test-Path config.toml) {
     # whose work lives on E:, `E:\work\app` walks up to `E:\`, finds no
     # container, and is dropped. Silently, like everything else in this file.
     $addedDrives = @()
-    $text = Get-Content -Raw -Encoding UTF8 config.toml
+    $text = Get-Content -Raw -Encoding UTF8 $ConfigPath
     foreach ($drive in (Get-PSDrive -PSProvider FileSystem)) {
         if ($drive.Root -notmatch '^[A-Za-z]:\\$' -or $null -eq $drive.Used) { continue }
         $letter = "$($drive.Name.ToUpper()):/"
@@ -252,7 +298,7 @@ if (Test-Path config.toml) {
         $text = $text.Replace('    "C:/",', "    `"C:/`",`r`n    `"$letter`",")
         $addedDrives += $letter
     }
-    Write-Utf8NoBom (Join-Path $PSScriptRoot "config.toml") $text
+    Write-Utf8NoBom $ConfigPath $text
     if ($addedDrives.Count -gt 0) {
         Ok "드라이브 추가: $($addedDrives -join ', ')"
     }
@@ -272,8 +318,8 @@ if (Test-Path config.toml) {
         }
         if ($emails.Count -gt 0) {
             $rendered = "authors = [" + ($emails -join ", ") + "]"
-            $text = Get-Content -Raw -Encoding UTF8 config.toml
-            Write-Utf8NoBom (Join-Path $PSScriptRoot "config.toml") $text.Replace("authors = []", $rendered)
+            $text = Get-Content -Raw -Encoding UTF8 $ConfigPath
+            Write-Utf8NoBom $ConfigPath $text.Replace("authors = []", $rendered)
             Ok "git.authors 설정됨 ($($emails.Count)개)"
         }
     } else {
@@ -318,24 +364,34 @@ if (Test-Path config.toml) {
     }
     $searchRoot = Ask 'git 저장소를 찾을 최상위 폴더' $best.TrimEnd('\') $SearchRoot
     $forwardRoot = $searchRoot.Replace('\', '/')
-    $text = Get-Content -Raw -Encoding UTF8 config.toml
+    $text = Get-Content -Raw -Encoding UTF8 $ConfigPath
     $text = [regex]::Replace($text, '(?m)^git_search_root = ".*"$',
                              "git_search_root = `"$forwardRoot`"")
-    Write-Utf8NoBom (Join-Path $PSScriptRoot "config.toml") $text
+    Write-Utf8NoBom $ConfigPath $text
     Ok "git_search_root = $forwardRoot"
 }
 
-$label = & $python -c "import tomllib;print(tomllib.load(open('config.toml','rb'))['launchd']['label'])"
-$label = $label.Trim()
+# Scoped to the [launchd] table, not the first `label =` in the file.
+#
+# `label` is not a unique key in this configuration: every
+# [[sources.extra_session_globs]] entry has one too, and they come first. An
+# unscoped match named the scheduled task "Claude Desktop (agent mode)" — which
+# registers, runs, and is findable only by someone who already suspects it.
+$configText = Get-Content -Raw -Encoding UTF8 $ConfigPath
+$launchdTable = [regex]::Match($configText, '(?ms)^\[launchd\][^\[]*')
+if (-not $launchdTable.Success) { Die "config.toml 에 [launchd] 절이 없습니다: $ConfigPath" }
+$labelMatch = [regex]::Match($launchdTable.Value, '(?m)^\s*label\s*=\s*"([^"]+)"')
+if (-not $labelMatch.Success) { Die "config.toml 에서 [launchd] label 을 읽지 못했습니다: $ConfigPath" }
+$label = $labelMatch.Groups[1].Value
 Ok "작업 이름: $label"
 
 # --------------------------------------------------------------------- env ---
 Step "5/9  .env"
-New-Item -ItemType Directory -Force -Path logs, state, work | Out-Null
-if (Test-Path .env) {
+New-Item -ItemType Directory -Force -Path (Join-Path $DataDir 'logs'), (Join-Path $DataDir 'state'), (Join-Path $DataDir 'work') | Out-Null
+if (Test-Path $EnvPath) {
     Ok "이미 있음 — 건드리지 않습니다"
 } else {
-    Write-Utf8NoBom (Join-Path $PSScriptRoot ".env") (Get-Content -Raw -Encoding UTF8 .env.example)
+    Write-Utf8NoBom $EnvPath (Get-Content -Raw -Encoding UTF8 (Join-Path $PSScriptRoot ".env.example"))
     Ok ".env.example -> .env"
 }
 # Outside the branch above: re-running the installer must re-assert this, or a
@@ -344,7 +400,7 @@ if (Test-Path .env) {
 # The macOS equivalent of chmod 600: drop inherited access, keep the owner plus
 # SYSTEM and Administrators (who could take ownership regardless).
 $principal = "$($env:USERDOMAIN)\$($env:USERNAME)"
-icacls .env /inheritance:r /grant:r "${principal}:F" "*S-1-5-18:F" "*S-1-5-32-544:F" /Q | Out-Null
+icacls $EnvPath /inheritance:r /grant:r "${principal}:F" "*S-1-5-18:F" "*S-1-5-32-544:F" /Q | Out-Null
 Ok ".env 권한: 본인 계정만 읽기 가능"
 
 $token  = Read-EnvValue "DAILY_REPORT_NOTION_TOKEN"
@@ -375,7 +431,8 @@ if ($databaseId) {
     # config.toml and .env but not registered anything.
     $previous = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    $output = & $python setup_notion_db.py 2>&1
+    if ($Frozen) { $output = & $AppExe setup-db 2>&1 }
+    else         { $output = & $python setup_notion_db.py 2>&1 }
     $exit = $LASTEXITCODE
     $ErrorActionPreference = $previous
     if ($exit -ne 0) { Die "데이터베이스 생성 실패:`n$($output -join "`n")" }
@@ -386,11 +443,11 @@ if ($databaseId) {
         Die "출력에서 데이터베이스 ID 를 찾지 못했습니다. 위 출력을 보고 .env 에 직접 넣으세요."
     }
     $databaseId = $match.Value
-    $lines = Get-Content .env -Encoding UTF8
+    $lines = Get-Content $EnvPath -Encoding UTF8
     $updated = $lines | ForEach-Object {
         if ($_.StartsWith("DAILY_REPORT_DATABASE_ID=")) { "DAILY_REPORT_DATABASE_ID=$databaseId" } else { $_ }
     }
-    Write-Utf8NoBom (Join-Path $PSScriptRoot ".env") (($updated -join "`r`n") + "`r`n")
+    Write-Utf8NoBom $EnvPath (($updated -join "`r`n") + "`r`n")
     Ok ".env 에 기록됨: $databaseId"
 }
 
@@ -403,7 +460,8 @@ $xml = Get-Content -Raw -Encoding UTF8 (Join-Path $PSScriptRoot "templates\schta
 function Xml($text) { [System.Security.SecurityElement]::Escape($text) }
 $xml = $xml.Replace('{{LABEL}}', (Xml $label))
 $xml = $xml.Replace('{{PROJECT_DIR}}', (Xml $PSScriptRoot))
-$xml = $xml.Replace('{{PYTHON}}', (Xml $pythonw))
+$xml = $xml.Replace('{{COMMAND}}', (Xml $TaskCommand))
+$xml = $xml.Replace('{{ARGUMENTS}}', (Xml $TaskArguments))
 $xml = $xml.Replace('{{USER_SID}}', (Xml $sid))
 # Any past date works: only the time of day is read from a daily trigger.
 $xml = $xml.Replace('{{START_BOUNDARY}}', '2020-01-01T04:05:00')
@@ -419,7 +477,7 @@ try {
 }
 $info = Get-ScheduledTask -TaskName $label
 Ok "작업 '$label' 등록됨 (매일 04:05, 로그온 유형 $($info.Principal.LogonType))"
-Ok "실행: $pythonw -X utf8 -u `"$PSScriptRoot\run_day.py`" --log"
+Ok "실행: $TaskCommand $TaskArguments"
 
 # --------------------------------------------------------------- shortcut ---
 Step "8/9  시작 메뉴 바로 가기"
@@ -429,8 +487,8 @@ $shortcut = Join-Path $startMenu "하루 마감 보고서.lnk"
 try {
     $wscript = New-Object -ComObject WScript.Shell
     $link = $wscript.CreateShortcut($shortcut)
-    $link.TargetPath       = $pythonw
-    $link.Arguments        = "-X utf8 `"$PSScriptRoot\status_window.py`""
+    $link.TargetPath       = $GuiCommand
+    $link.Arguments        = $GuiArguments
     $link.WorkingDirectory = $PSScriptRoot
     # No em-dash: the shortcut's Description travels through a COM interface
     # that drops it to the ANSI codepage, and it shows up as "?" in the tooltip.
@@ -439,29 +497,42 @@ try {
     Ok "$shortcut"
 } catch {
     Warn "바로 가기를 만들지 못했습니다: $($_.Exception.Message)"
-    Warn "직접 실행: $pythonw -X utf8 `"$PSScriptRoot\status_window.py`""
+    Warn "직접 실행: $GuiCommand $GuiArguments"
 }
 
 # ------------------------------------------------------------------- skill ---
 Step "9/9  Claude Code 스킬"
 $skillRoot = Join-Path $HOME ".claude\skills"
 $skillLink = Join-Path $skillRoot "daily-report"
+$skillSource = Join-Path $PSScriptRoot "skills\daily-report"
+if ($Frozen) {
+    # Inside a bundle the skill lives under _internal, which is replaced
+    # wholesale on upgrade — a junction into it would dangle. Copying costs a
+    # few kilobytes and survives.
+    $skillSource = Join-Path $PSScriptRoot "_internal\skills\daily-report"
+}
 New-Item -ItemType Directory -Force -Path $skillRoot | Out-Null
 $existingLink = Get-Item $skillLink -ErrorAction SilentlyContinue
-if ($existingLink -and -not $existingLink.LinkType) {
+if (-not (Test-Path $skillSource)) {
+    Warn "스킬 원본을 찾지 못했습니다: $skillSource"
+} elseif ($existingLink -and -not $existingLink.LinkType -and -not $Frozen) {
     Warn "$skillLink 이 링크가 아니라서 건드리지 않았습니다"
+} elseif ($Frozen) {
+    if ($existingLink) { Remove-Item $skillLink -Recurse -Force }
+    Copy-Item $skillSource $skillLink -Recurse -Force
+    Ok "$skillLink (복사본 — 번들은 업그레이드 때 통째로 교체된다)"
 } else {
     if ($existingLink) { Remove-Item $skillLink -Recurse -Force }
     # A junction, not a symbolic link: symlinks need admin or Developer Mode,
     # and asking for elevation to install a per-user scheduled job is worse
     # than the junction's one limitation (it cannot cross to a network share).
-    New-Item -ItemType Junction -Path $skillLink -Target (Join-Path $PSScriptRoot "skills\daily-report") | Out-Null
+    New-Item -ItemType Junction -Path $skillLink -Target $skillSource | Out-Null
     Ok "$skillLink -> skills\daily-report"
 }
 
 # ------------------------------------------------------------------ verify ---
 Write-Host ""
-& $python doctor.py
+if ($Frozen) { & $AppExe doctor } else { & $python doctor.py }
 
 $yesterday = (Get-Date).AddDays(-1).ToString('yyyy-MM-dd')
 Write-Host ""

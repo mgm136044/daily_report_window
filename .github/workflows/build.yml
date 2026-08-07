@@ -130,10 +130,36 @@ jobs:
           # build fails for the one reason this step is not testing.
           exit 0
 
+      # Inno Setup is preinstalled on the windows runner images.
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          # Preinstalled on the runner images under Program Files (x86);
+          # a winget install puts it in the user profile instead.
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          }
+          if (-not $iscc) { throw "Inno Setup 을 찾지 못했습니다" }
+          & $iscc installer.iss /DSourceDir=dist\daily-report `
+                  /DAppVersion=0.1.0 /O"$PWD\dist"
+          if ($LASTEXITCODE -ne 0) { throw "설치기 빌드 실패" }
+          Get-ChildItem dist\*.exe | ForEach-Object {
+            "$($_.Name)  $([math]::Round($_.Length/1MB,1)) MB"
+            "SHA256 $((Get-FileHash $_.FullName -Algorithm SHA256).Hash)"
+          }
+
       - uses: actions/upload-artifact@v4
         with:
           name: daily-report-unsigned
-          path: dist/daily-report
+          path: |
+            dist/daily-report
+            dist/*.exe
 
   release:
     needs: verify

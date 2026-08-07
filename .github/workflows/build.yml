@@ -124,6 +124,11 @@ jobs:
           if ($output -notmatch '보고서 프롬프트') {
             throw "번들 안의 자원을 찾지 못했습니다 — paths.resource_root() 확인"
           }
+          # doctor's own exit code is 1 here and that is the correct answer:
+          # nothing on this runner is configured. Actions ends a pwsh step with
+          # `exit $LASTEXITCODE`, so without this the step inherits it and the
+          # build fails for the one reason this step is not testing.
+          exit 0
 
       - uses: actions/upload-artifact@v4
         with:

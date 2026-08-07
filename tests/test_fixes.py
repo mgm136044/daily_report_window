@@ -1005,6 +1005,35 @@ def test_frozen_build_ships_every_runtime_resource():
                    "config.windows.example.toml", ".env.example", "install.ps1"):
         assert f'"{needed}"' in spec, f"번들에 빠진 자원: {needed}"
 
+def test_no_workflow_step_feeds_korean_to_windows_powershell():
+    """The project's own encoding defect, arriving through the workflow file.
+
+    Actions writes an inline `run:` script to a temporary .ps1 with no BOM.
+    Windows PowerShell 5.1 has no default encoding for script files, so it
+    decodes that in the machine's ANSI codepage: the Korean turns to mojibake
+    and the mangled bytes unbalance a quote. The step fails with a ParserError
+    that names a token, not an encoding — and it caught two steps here, one of
+    them the release gate, which would have blocked for the wrong reason and
+    said nothing about signing.
+
+    `pwsh` reads script files as UTF-8. `shell: powershell` is still correct
+    where the point is to exercise 5.1 itself — that step just has to stay
+    ASCII.
+    """
+    import re as _re
+    body = open(os.path.join(ROOT, ".github", "workflows", "build.yml"),
+                encoding="utf-8").read()
+    hangul = _re.compile(r"[가-힣]")
+    steps = _re.finditer(r"^      - name: (.+?)$(.*?)(?=^      - name:|\Z)",
+                         body, _re.M | _re.S)
+    for step in steps:
+        name, block = step.group(1), step.group(2)
+        shell = (_re.search(r"shell:\s*(\S+)", block) or [None, ""])[1]
+        without_comments = _re.sub(r"^\s*#.*$", "", block, flags=_re.M)
+        if shell == "powershell":
+            assert not hangul.search(without_comments), \
+                f"'{name}' 이 Windows PowerShell 5.1 에 한글을 넘긴다 — ParserError 로 죽는다"
+
 def test_ci_runs_the_suite_on_macos_too():
     """Adding Windows changed files the macOS path runs through.
 

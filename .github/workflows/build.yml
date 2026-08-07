@@ -97,8 +97,19 @@ jobs:
           python -m pip install --upgrade pip pyinstaller
           python -m PyInstaller daily-report.spec --noconfirm --clean
 
+      # pwsh, not powershell — and this is the same defect the project itself
+      # documents, arriving through the workflow file.
+      #
+      # Actions writes an inline script to a temporary .ps1 with no BOM.
+      # Windows PowerShell 5.1 then decodes it in the machine's ANSI codepage,
+      # so the Korean below turns to mojibake and the mangled bytes unbalance a
+      # quote: the step fails with a ParserError rather than with anything that
+      # points at encoding. PowerShell 7 reads script files as UTF-8.
+      #
+      # The Korean has to stay: the string being matched *is* the frozen
+      # build's Korean output, which is exactly what this step exists to check.
       - name: Smoke test the frozen build
-        shell: powershell
+        shell: pwsh
         env:
           DAILY_REPORT_HOME: ${{ runner.temp }}\daily-report-data
         run: |
@@ -126,8 +137,12 @@ jobs:
     permissions:
       contents: write
     steps:
+      # pwsh for the same reason as the smoke test above: Windows PowerShell
+      # 5.1 would decode this file's Korean in the ANSI codepage and fail with
+      # a ParserError — meaning the release gate would block for the wrong
+      # reason and say nothing about signing.
       - name: Refuse to release without a signing identity
-        shell: powershell
+        shell: pwsh
         run: |
           if (-not "${{ secrets.SIGNING_ENABLED }}") {
             throw @"

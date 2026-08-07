@@ -48,7 +48,12 @@ NOISE_DIR_PARTS = ("/.git/", "/node_modules/", "/__pycache__/", "/.venv/",
 # would list its own digests and ledger as the day's output. Derived from this
 # file's location rather than matched by name, so a project of the user's that
 # happens to have a `work/` directory is unaffected.
-_SELF_ROOT = os.path.dirname(os.path.abspath(__file__))
+import paths
+
+# Follows the *data* root, because that is where these directories actually
+# are. Frozen, the executable and its artifacts live in different places, and
+# deriving this from the code's location would stop excluding them.
+_SELF_ROOT = paths.data_root()
 SELF_ARTIFACT_DIRS = tuple(
     os.path.join(_SELF_ROOT, name) + os.sep for name in ("work", "state", "logs")
 )

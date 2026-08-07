@@ -71,6 +71,11 @@ git_max_depth = 6
 #   `:/x/`  anchors to any drive root (`C:/Windows/`, `D:/Windows/`, …)
 walk_exclude = [
     "~/AppData/",
+    # `%OneDrive%` is the only dependable name for it. A work account produces
+    # `OneDrive - Contoso`, and a localized install can differ again; the
+    # literal below covers the personal default and install.ps1 appends
+    # whatever this machine actually has.
+    "%OneDrive%/",
     "~/OneDrive/",
     "~/iCloudDrive/",
     "~/iCloudPhotos/",
@@ -127,9 +132,25 @@ extra_repo_roots = []
 # Sessions that live outside the normal tree and whose working directory
 # carries no project meaning. Each entry gets a fixed label instead.
 #
-# The macOS example lists Claude Desktop's local agent mode here. There is no
-# verified Windows equivalent, so nothing is configured by default — leaving a
-# glob that matches nothing would look like a working feature.
+# Claude Code's desktop app does **not** need an entry here: it runs the same
+# CLI (`%APPDATA%\Claude\claude-code\`) and writes to the same
+# `~/.claude/projects`, so it is already collected by `claude_projects_dir`.
+# Verified by finding this project's own desktop session there.
+#
+# Agent mode is different — its transcripts sit under the app's data directory
+# and their `cwd` points at a scratch folder, so the ordinary project rollup
+# cannot place them. The directory exists on Windows under the same name it has
+# on macOS, but no transcript has been observed in it here yet: the glob below
+# is the correct analogue rather than a verified one. It costs nothing while it
+# matches nothing.
+#
+# Work that ran *inside* the agent-mode VM is not reachable — it lives in a
+# disk image — so only the conversation with the agent would be collected.
+# `%APPDATA%` rather than `~/AppData/Roaming`: the two are the same on a stock
+# install and are not on a domain-joined or roaming-profile machine.
+[[sources.extra_session_globs]]
+glob = "%APPDATA%/Claude/local-agent-mode-sessions/**/.claude/projects/**/*.jsonl"
+label = "Claude Desktop (agent mode)"
 
 [git]
 # Commits by these authors count as yours. **Nothing else is counted.**
@@ -224,6 +245,10 @@ never = [
     # Where the native Claude Code installer puts `claude.exe`. Agents run
     # commands from it, so sessions land there — but nothing in it is work.
     "~/.local",
+    # Both spellings of the cloud folder. See the walk_exclude note: a work
+    # account calls it `OneDrive - <company>`, and install.ps1 appends the ones
+    # this machine really has.
+    "%OneDrive%",
     # `~/OneDrive` is here rather than in `containers` on purpose.
     #
     # As a container, every unlisted child of it became a project — and the
@@ -300,6 +325,19 @@ schema_language = "en"
 # a no-sleep assertion for its whole duration so the two rarely differ, but a
 # forced sleep mid-run does abort the day — which the next run backfills.
 watchdog_sec = 2400
+
+# Notify when a run succeeds at producing nothing.
+#
+# Exceptions already shout. What they cannot catch is the configuration defect
+# that yields a clean exit and an empty report — and on Windows that is the
+# likely failure, not the exotic one: `git_search_root = "~"` finds nothing on
+# a machine whose projects live on D:, and every day then reports zero commits
+# exactly the way a quiet fortnight does.
+#
+# Compared against the median of recent days, so a metric that was already zero
+# says nothing and a quiet weekend does not trigger it. Throttled to once a
+# week per cause.
+regression_alerts = true
 
 [summary]
 model_timeout_sec = 900

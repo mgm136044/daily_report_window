@@ -52,7 +52,11 @@ SCRATCH_DIR = platform_support.PLATFORM.scratch_dir("daily-report-summarizer")
 # without a heading, is treated as a failed run rather than uploaded.
 MIN_REPORT_CHARS = 200
 
-PROMPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompts")
+import paths  # noqa: E402
+
+# Ships with the tool and is never written, so it follows the resource root —
+# which inside a frozen bundle is the extraction directory, not the executable's.
+PROMPTS_DIR = paths.resource("prompts")
 
 # Weekday names per language. The prompt is a document, not code, so it lives
 # in prompts/<lang>.md — an English user changes one config line, not the

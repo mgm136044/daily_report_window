@@ -23,7 +23,18 @@
 #>
 
 [CmdletBinding()]
-param()
+param(
+    # Supplied by setup_gui.py. The wizard collects the answers and hands them
+    # over rather than writing config.toml itself — every step below stays the
+    # single implementation, so the GUI cannot drift away from the script that
+    # was actually verified on a real machine.
+    #
+    # Anything omitted is asked for interactively, exactly as before.
+    [string] $Language   = "",
+    [string] $Authors    = "",
+    [string] $SearchRoot = "",
+    [switch] $NonInteractive
+)
 
 $ErrorActionPreference = 'Stop'
 Set-Location -Path $PSScriptRoot
@@ -33,7 +44,11 @@ function Ok($text)   { Write-Host "  [OK]   $text" -ForegroundColor Green }
 function Warn($text) { Write-Host "  [!]    $text" -ForegroundColor Yellow }
 function Die($text)  { Write-Host ""; Write-Host "[X] $text" -ForegroundColor Red; exit 1 }
 
-function Ask($prompt, $default) {
+function Ask($prompt, $default, $supplied = "") {
+    # A value handed in by the wizard wins; -NonInteractive takes the default
+    # rather than blocking on a prompt nobody can see behind a GUI.
+    if (-not [string]::IsNullOrWhiteSpace($supplied)) { return $supplied.Trim() }
+    if ($NonInteractive) { return $default }
     $answer = Read-Host "  $prompt [$default]"
     if ([string]::IsNullOrWhiteSpace($answer)) { return $default }
     return $answer.Trim()
@@ -59,7 +74,7 @@ function Read-EnvValue($key) {
 }
 
 # ---------------------------------------------------------------- platform ---
-Step "1/8  플랫폼 확인"
+Step "1/9  플랫폼 확인"
 if (-not $IsWindows -and $PSVersionTable.PSVersion.Major -ge 6) {
     Die "Windows 전용 설치 스크립트입니다. macOS/Linux 는 install.sh 를 쓰세요."
 }
@@ -67,7 +82,7 @@ $osName = (Get-CimInstance Win32_OperatingSystem).Caption
 Ok "$osName  (PowerShell $($PSVersionTable.PSVersion))"
 
 # ------------------------------------------------------------------ python ---
-Step "2/8  Python 확인"
+Step "2/9  Python 확인"
 $python = ""
 # `py -3` first: the bare `python` on PATH is usually the Microsoft Store stub,
 # which resolves and then refuses to run.
@@ -97,7 +112,7 @@ if (-not (Test-Path $pythonw)) {
 }
 
 # ------------------------------------------------------------------ claude ---
-Step "3/8  Claude Code CLI 확인"
+Step "3/9  Claude Code CLI 확인"
 $claudeBin = ""
 $claudeCandidates = @(
     (Join-Path $HOME ".local\bin\claude.exe"),
@@ -116,11 +131,11 @@ if ($claudeBin) {
 }
 
 # ------------------------------------------------------------------ config ---
-Step "4/8  config.toml"
+Step "4/9  config.toml"
 if (Test-Path config.toml) {
     Ok "이미 있음 — 건드리지 않습니다"
 } else {
-    $language = Ask '보고서 언어 (ko/en)' 'ko'
+    $language = Ask '보고서 언어 (ko/en)' 'ko' $Language
     if ($language -ne 'ko' -and $language -ne 'en') { $language = 'ko' }
     # A Korean (or any non-ASCII) account name reduces to the empty string
     # here, which would produce the label "com..daily-report".
@@ -152,6 +167,28 @@ if (Test-Path config.toml) {
         $resolved = [Environment]::GetFolderPath($folder)
         if ($resolved -and ($shellFolders -notcontains $resolved)) { $shellFolders += $resolved }
     }
+    # Downloads has no SpecialFolder enum — it is a Known Folder, and the only
+    # way to ask for it is by GUID. It is one of the largest and noisiest trees
+    # in a home directory, so guessing "~/Downloads" and being wrong is
+    # expensive.
+    try {
+        $downloads = (Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders' `
+                      -Name '{374DE290-123F-4565-9164-39C4925E467B}' -ErrorAction Stop).'{374DE290-123F-4565-9164-39C4925E467B}'
+        $downloads = [Environment]::ExpandEnvironmentVariables($downloads)
+        if ($downloads -and ($shellFolders -notcontains $downloads)) { $shellFolders += $downloads }
+    } catch { }
+
+    # Cloud folders, which cannot be named in advance: a work account produces
+    # `OneDrive - Contoso`, and a machine can have both that and a personal one.
+    $cloud = @()
+    foreach ($name in @('OneDrive', 'OneDriveConsumer', 'OneDriveCommercial')) {
+        $value = [Environment]::GetEnvironmentVariable($name)
+        if ($value -and ($cloud -notcontains $value)) { $cloud += $value }
+    }
+    foreach ($dir in (Get-ChildItem -LiteralPath $HOME -Directory -Force -ErrorAction SilentlyContinue |
+                      Where-Object { $_.Name -like 'OneDrive*' -or $_.Name -like 'iCloud*' -or $_.Name -like 'Dropbox*' -or $_.Name -like 'Google Drive*' })) {
+        if ($cloud -notcontains $dir.FullName) { $cloud += $dir.FullName }
+    }
     $addedContainers = @()
     $addedWalk = @()
     $text = Get-Content -Raw -Encoding UTF8 config.toml
@@ -161,17 +198,63 @@ if (Test-Path config.toml) {
             $text = $text.Replace('    "~/Documents",', "    `"$forward`",`r`n    `"~/Documents`",")
             $addedContainers += $resolved
         }
+        # Anchored to the home directory, matching the rest of the list: a bare
+        # "/문서/" would match any project containing a folder of that name, and
+        # an excluded tree reports nothing — it just stops being scanned.
         $leaf = Split-Path $resolved -Leaf
-        if ($leaf -and ($text -notmatch [regex]::Escape("`"/$leaf/`""))) {
-            $text = $text.Replace('    "/$Recycle.Bin/",', "    `"/$leaf/`",`r`n    `"/`$Recycle.Bin/`",")
+        if ($leaf -and ($text -notmatch [regex]::Escape("`"~/$leaf/`""))) {
+            $text = $text.Replace('    "~/AppData/",', "    `"~/AppData/`",`r`n    `"~/$leaf/`",")
             $addedWalk += $leaf
         }
     }
+    # A cloud root is never a project itself and must not be walked, but work
+    # *inside* it still has to be collected — so it goes to `never` and
+    # walk_exclude, never to `exclude.paths`.
+    $addedCloud = @()
+    foreach ($root in $cloud) {
+        $forward = $root.Replace('\', '/')
+        if ($text -notmatch [regex]::Escape("`"$forward`"")) {
+            $text = $text.Replace('    "%OneDrive%",', "    `"%OneDrive%`",`r`n    `"$forward`",")
+            $addedCloud += (Split-Path $root -Leaf)
+        }
+        if ($text -notmatch [regex]::Escape("`"$forward/`"")) {
+            $text = $text.Replace('    "%OneDrive%/",', "    `"%OneDrive%/`",`r`n    `"$forward/`",")
+        }
+    }
     Write-Utf8NoBom (Join-Path $PSScriptRoot "config.toml") $text
+    if ($addedCloud.Count -gt 0) {
+        Ok "클라우드 폴더 추가: $($addedCloud -join ', ')"
+    }
+    if ($addedWalk.Count -gt 0) {
+        Ok "탐색 제외에 추가: $($addedWalk -join ', ')"
+    }
     if ($addedContainers.Count -gt 0) {
         Ok "이 PC 의 실제 셸 폴더 경로 추가: $($addedContainers -join ', ')"
     } else {
         Ok "셸 폴더 경로는 예시에 이미 포함돼 있습니다"
+    }
+
+    # Every fixed drive, not just the two the example happens to name.
+    #
+    # A drive root has to be both a container (so a project sitting directly on
+    # it is one) and never a project itself. The example lists C: and D:
+    # because that is what the machine it was written on had — on a machine
+    # whose work lives on E:, `E:\work\app` walks up to `E:\`, finds no
+    # container, and is dropped. Silently, like everything else in this file.
+    $addedDrives = @()
+    $text = Get-Content -Raw -Encoding UTF8 config.toml
+    foreach ($drive in (Get-PSDrive -PSProvider FileSystem)) {
+        if ($drive.Root -notmatch '^[A-Za-z]:\\$' -or $null -eq $drive.Used) { continue }
+        $letter = "$($drive.Name.ToUpper()):/"
+        if ($text -match [regex]::Escape("`"$letter`"")) { continue }
+        # One replacement, two lists: `    "C:/",` appears in both containers
+        # and never, and both of them need every drive.
+        $text = $text.Replace('    "C:/",', "    `"C:/`",`r`n    `"$letter`",")
+        $addedDrives += $letter
+    }
+    Write-Utf8NoBom (Join-Path $PSScriptRoot "config.toml") $text
+    if ($addedDrives.Count -gt 0) {
+        Ok "드라이브 추가: $($addedDrives -join ', ')"
     }
 
     # git.authors has no usable default: empty collects nothing, and guessing
@@ -180,8 +263,8 @@ if (Test-Path config.toml) {
     if (Get-Command git -ErrorAction SilentlyContinue) {
         $suggested = (git config --global user.email)
     }
-    if ($suggested) {
-        $answer = Ask "커밋 저자로 쓸 이메일 (쉼표로 여러 개)" $suggested
+    if ($suggested -or $Authors) {
+        $answer = Ask "커밋 저자로 쓸 이메일 (쉼표로 여러 개)" $suggested $Authors
         $emails = @()
         foreach ($piece in $answer.Split(',')) {
             $piece = $piece.Trim()
@@ -204,24 +287,36 @@ if (Test-Path config.toml) {
     # error anywhere in the collector — every day just reports zero commits,
     # which is indistinguishable from a quiet fortnight. So ask, and make the
     # default an answer that was measured rather than assumed.
-    Write-Host "  git 저장소를 찾는 중 (얕은 탐색)…"
     $best = $HOME
     $bestCount = -1
-    $roots = @($HOME)
-    foreach ($drive in (Get-PSDrive -PSProvider FileSystem)) {
-        if ($drive.Root -match '^[A-Za-z]:\\$' -and $drive.Used -ne $null) {
-            $roots += $drive.Root
+    $roots = @()
+    # Skipped entirely when the wizard already asked — the probe walks several
+    # drives and there is no reason to pay for it twice.
+    if (-not $SearchRoot) {
+        Write-Host "  git 저장소를 찾는 중 (얕은 탐색)…"
+        $roots = @($HOME)
+        foreach ($drive in (Get-PSDrive -PSProvider FileSystem)) {
+            if ($drive.Root -match '^[A-Za-z]:\\$' -and $drive.Used -ne $null) {
+                $roots += $drive.Root
+            }
         }
     }
     foreach ($candidate in ($roots | Select-Object -Unique)) {
         try {
+            # Depth 6 matches sources.git_max_depth, which is what the
+            # collector will actually use. A shallower probe recommends a root
+            # by a count that is wrong in the direction that matters: measured
+            # here, a drive root reported 2 repositories at depth 4 and 4 at
+            # depth 6, because `D:\<area>\<group>\<project>\.git` sits on the
+            # fifth level. Depth 8 found nothing more and cost twenty times as
+            # much.
             $found = @(Get-ChildItem -LiteralPath $candidate -Directory -Filter '.git' `
-                       -Recurse -Depth 4 -Force -ErrorAction SilentlyContinue)
+                       -Recurse -Depth 6 -Force -ErrorAction SilentlyContinue)
         } catch { $found = @() }
         Write-Host "    $candidate → $($found.Count)개"
         if ($found.Count -gt $bestCount) { $bestCount = $found.Count; $best = $candidate }
     }
-    $searchRoot = Ask 'git 저장소를 찾을 최상위 폴더' $best.TrimEnd('\')
+    $searchRoot = Ask 'git 저장소를 찾을 최상위 폴더' $best.TrimEnd('\') $SearchRoot
     $forwardRoot = $searchRoot.Replace('\', '/')
     $text = Get-Content -Raw -Encoding UTF8 config.toml
     $text = [regex]::Replace($text, '(?m)^git_search_root = ".*"$',
@@ -235,7 +330,7 @@ $label = $label.Trim()
 Ok "작업 이름: $label"
 
 # --------------------------------------------------------------------- env ---
-Step "5/8  .env"
+Step "5/9  .env"
 New-Item -ItemType Directory -Force -Path logs, state, work | Out-Null
 if (Test-Path .env) {
     Ok "이미 있음 — 건드리지 않습니다"
@@ -268,7 +363,7 @@ if (-not $token -or -not $parent) {
 Ok "토큰 $($token.Substring(0, [Math]::Min(8, $token.Length)))… ($($token.Length)자) · 부모 페이지 설정됨"
 
 # ---------------------------------------------------------------- database ---
-Step "6/8  Notion 데이터베이스"
+Step "6/9  Notion 데이터베이스"
 $databaseId = Read-EnvValue "DAILY_REPORT_DATABASE_ID"
 if ($databaseId) {
     Ok "이미 설정됨: $databaseId"
@@ -300,7 +395,7 @@ if ($databaseId) {
 }
 
 # --------------------------------------------------------------- scheduler ---
-Step "7/8  작업 스케줄러 등록"
+Step "7/9  작업 스케줄러 등록"
 $sid = ([System.Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
 $xml = Get-Content -Raw -Encoding UTF8 (Join-Path $PSScriptRoot "templates\schtasks.xml.template")
 # Escaped, not interpolated: a project directory containing `&` is legal on
@@ -326,8 +421,27 @@ $info = Get-ScheduledTask -TaskName $label
 Ok "작업 '$label' 등록됨 (매일 04:05, 로그온 유형 $($info.Principal.LogonType))"
 Ok "실행: $pythonw -X utf8 -u `"$PSScriptRoot\run_day.py`" --log"
 
+# --------------------------------------------------------------- shortcut ---
+Step "8/9  시작 메뉴 바로 가기"
+# pythonw so opening the status window does not flash a console behind it.
+$startMenu = [Environment]::GetFolderPath('Programs')
+$shortcut = Join-Path $startMenu "하루 마감 보고서.lnk"
+try {
+    $wscript = New-Object -ComObject WScript.Shell
+    $link = $wscript.CreateShortcut($shortcut)
+    $link.TargetPath       = $pythonw
+    $link.Arguments        = "-X utf8 `"$PSScriptRoot\status_window.py`""
+    $link.WorkingDirectory = $PSScriptRoot
+    $link.Description      = "하루 마감 보고서 — 상태 확인과 진단"
+    $link.Save()
+    Ok "$shortcut"
+} catch {
+    Warn "바로 가기를 만들지 못했습니다: $($_.Exception.Message)"
+    Warn "직접 실행: $pythonw -X utf8 `"$PSScriptRoot\status_window.py`""
+}
+
 # ------------------------------------------------------------------- skill ---
-Step "8/8  Claude Code 스킬"
+Step "9/9  Claude Code 스킬"
 $skillRoot = Join-Path $HOME ".claude\skills"
 $skillLink = Join-Path $skillRoot "daily-report"
 New-Item -ItemType Directory -Force -Path $skillRoot | Out-Null

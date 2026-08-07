@@ -172,6 +172,16 @@ schema_language = "en"
 # hangs is worse than one that fails — no report, no error, no signal.
 watchdog_sec = 2400
 
+# Notify when a run succeeds at producing nothing.
+#
+# Exceptions already shout. What they cannot catch is the configuration defect
+# that yields a clean exit and an empty report — a search root pointed at the
+# wrong place, an exclusion that swallowed everything. Compared against the
+# median of recent days, so a metric that was already zero says nothing and a
+# quiet weekend does not trigger it. Alerts are throttled to once a week per
+# cause.
+regression_alerts = true
+
 [summary]
 model_timeout_sec = 900
 max_turns = 1

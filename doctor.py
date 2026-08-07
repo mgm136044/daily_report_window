@@ -27,7 +27,12 @@ import run_day  # noqa: E402
 import summarize  # noqa: E402
 from notion_upsert import load_env  # noqa: E402
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+import paths  # noqa: E402
+
+# Scripts and prompts ship with the tool; `.env` is written. From a checkout
+# these are the same directory.
+HERE = paths.resource_root()
+DATA = paths.data_root()
 LABEL = config.load().get("launchd", {}).get("label", "com.example.daily-report")
 SCHEDULER_FILE = platform_support.PLATFORM.scheduler_path(LABEL)
 LOG_TAIL_LINES = 12
@@ -136,24 +141,52 @@ def check_repo_discovery(cfg: dict) -> None:
         report(OK, "저장소 탐색", detail)
 
 
+def check_output_regression(state: dict, completed: dict) -> None:
+    """Judge the most recent day that actually *ran*.
+
+    Not the most recent *successful* one. A day that ran and found nothing is
+    recorded as skipped ("활동 없음"), so picking the latest non-skipped entry
+    steps over exactly the day worth looking at — the check would report on the
+    last day things worked and call the machine healthy.
+
+    Uses the same function the run itself uses. Two implementations of "is this
+    number suspicious" would drift, and then the nightly alert and the
+    diagnosis would contradict each other.
+    """
+    ran = [day for day, entry in completed.items()
+           if not entry.get("skipped") or entry["skipped"] == run_day.NO_ACTIVITY]
+    judged = max(ran) if ran else config.logical_date(datetime.now(config.local_tz()))
+
+    regressions = run_day.detect_regression(state, judged)
+    if not regressions:
+        report(OK, "산출 이상", f"없음 (판정 대상 {judged})")
+        return
+    report(WARN, "산출 이상",
+           f"판정 대상: {judged}\n"
+           + "\n".join(message for _, message in regressions)
+           + "\n실행 자체는 성공했습니다 — 설정 문제일 가능성이 큽니다")
+
+
 def check_last_run() -> None:
     state = run_day.read_state()
     completed = state.get("completed", {})
     real = {k: v for k, v in completed.items() if not v.get("skipped")}
-    if not real:
+    if real:
+        latest = max(real)
+        entry = real[latest]
+        when = entry.get("at", "?")
+        detail = (f"마지막 처리 날짜: {latest}  (실행 시각 {when})\n"
+                  f"프로젝트 {entry.get('projects','?')}개 · 세션 {entry.get('sessions','?')} · "
+                  f"파일 {entry.get('files','?')} · 커밋 {entry.get('commits','?')} · "
+                  f"보고서 {entry.get('report_chars','?')}자")
+        findings = entry.get("digest_findings") or {}
+        if findings:
+            detail += f"\n살균 탐지: {findings}"
+        report(OK, "실행 이력", detail)
+    else:
         report(WARN, "실행 이력", "성공 기록이 없습니다 (아직 한 번도 안 돌았을 수 있음)")
-        return
-    latest = max(real)
-    entry = real[latest]
-    when = entry.get("at", "?")
-    detail = (f"마지막 처리 날짜: {latest}  (실행 시각 {when})\n"
-              f"프로젝트 {entry.get('projects','?')}개 · 세션 {entry.get('sessions','?')} · "
-              f"파일 {entry.get('files','?')} · 커밋 {entry.get('commits','?')} · "
-              f"보고서 {entry.get('report_chars','?')}자")
-    findings = entry.get("digest_findings") or {}
-    if findings:
-        detail += f"\n살균 탐지: {findings}"
-    report(OK, "실행 이력", detail)
+
+    check_output_regression(state, completed)
 
     pending = run_day.pending_days(state)
     if pending:
@@ -223,7 +256,7 @@ def check_auth() -> None:
 
 def check_notion() -> None:
     try:
-        env = load_env(os.path.join(HERE, ".env"))
+        env = load_env(os.path.join(DATA, ".env"))
     except FileNotFoundError as error:
         report(FAIL, "Notion 설정", str(error))
         return

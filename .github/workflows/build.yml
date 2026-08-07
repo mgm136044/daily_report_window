@@ -1,0 +1,142 @@
+name: build
+
+# Two jobs on purpose.
+#
+# `verify` runs on every push and proves the bundle still builds and starts.
+# `release` runs only on a tag, and **refuses to publish an unsigned build**.
+#
+# That refusal is the point. An unsigned executable is not a neutral outcome:
+# SmartScreen shows "Windows protected your PC" and most people stop there, so
+# shipping one makes installation harder than the `git clone` it replaces.
+# Encoding the rule here means nobody has to remember it at 2 a.m.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # The macOS entry is the point of this matrix, not a bonus.
+  #
+  # Adding Windows meant changing files the macOS path runs through, and that
+  # side was checked by reading the code rather than by executing it — the
+  # exact standard this project rejects everywhere else. A macOS runner turns
+  # "reviewed carefully" into "passes on every push", and it is the only way
+  # the claim stays true after the next change.
+  #
+  # windows-2022 is there for the same reason: it is a generation behind
+  # windows-latest, and API differences that only appear on Windows 10 have
+  # nowhere else to show up. Linux runs the suite too, to prove the
+  # "not supported" path fails loudly rather than half-working.
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-2022, macos-latest, ubuntu-latest]
+        python: ["3.12"]
+        include:
+          - os: windows-latest
+            python: "3.11"    # the oldest version tomllib exists in
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Run the test suite
+        run: python -X utf8 -m pytest tests/ -q
+
+      - name: Linux must refuse to start rather than half-run
+        if: runner.os == 'Linux'
+        run: |
+          python - <<'PY'
+          import platform_support
+          try:
+              platform_support.require_supported()
+          except platform_support.Unsupported as error:
+              assert "Linux" in str(error), error
+              print("거부됨:", str(error).splitlines()[0])
+          else:
+              raise SystemExit("Linux 가 지원되는 것처럼 통과했습니다")
+          PY
+
+  verify:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check install.ps1 parses under Windows PowerShell
+        shell: powershell
+        run: |
+          $errors = $null; $tokens = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path install.ps1), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors -and $errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Host "L$($_.Extent.StartLineNumber): $($_.Message)" }
+            exit 1
+          }
+
+      - name: Build
+        run: |
+          python -m pip install --upgrade pip pyinstaller
+          python -m PyInstaller daily-report.spec --noconfirm --clean
+
+      - name: Smoke test the frozen build
+        shell: powershell
+        env:
+          DAILY_REPORT_HOME: ${{ runner.temp }}\daily-report-data
+        run: |
+          # doctor exits non-zero on a machine with nothing configured, which
+          # is correct — what is being checked is that it runs at all and that
+          # its Korean output survives the round trip.
+          $output = & dist\daily-report\daily-report.exe doctor 2>&1 | Out-String
+          Write-Host $output
+          if ($output -notmatch '하루 마감 보고서 상태 점검') {
+            throw "동결 빌드가 시작되지 않았거나 출력이 깨졌습니다"
+          }
+          if ($output -notmatch '보고서 프롬프트') {
+            throw "번들 안의 자원을 찾지 못했습니다 — paths.resource_root() 확인"
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: daily-report-unsigned
+          path: dist/daily-report
+
+  release:
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Refuse to release without a signing identity
+        shell: powershell
+        run: |
+          if (-not "${{ secrets.SIGNING_ENABLED }}") {
+            throw @"
+          서명 자격이 설정되지 않아 릴리스를 중단합니다.
+
+          서명 없는 exe 는 SmartScreen 에서 '이 앱이 PC 를 보호했습니다' 로 막히고,
+          대부분의 사용자가 거기서 이탈합니다. 그건 설치가 쉬워진 게 아니라
+          어려워진 것이므로, 지금은 git clone + install.ps1 이 더 나은 배포 경로입니다.
+
+          Azure Trusted Signing (월 \$9.99) 또는 OV 코드 서명 인증서를 마련한 뒤
+          저장소 시크릿에 SIGNING_ENABLED 를 설정하고 아래 서명 단계를 채우세요.
+          "@
+          }
+
+      # - name: Sign
+      #   Fill in once a certificate exists. Azure Trusted Signing:
+      #     azure/trusted-signing-action@v0
+      #   or signtool with a PFX from a secret.
+
+      - name: Package and publish
+        run: echo "서명 단계가 채워진 뒤에 활성화됩니다"

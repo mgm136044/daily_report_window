@@ -13,8 +13,13 @@ import unicodedata
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.environ.get("DAILY_REPORT_CONFIG") or os.path.join(HERE, "config.toml")
+import paths
+
+# The settings file is written by the installer and edited by the user, so it
+# follows the data root; the examples ship with the tool and follow the
+# resource root. From a checkout these are the same directory.
+HERE = paths.resource_root()
+CONFIG_PATH = os.environ.get("DAILY_REPORT_CONFIG") or paths.data("config.toml")
 
 
 def example_for(platform_name: str) -> str:
@@ -62,7 +67,16 @@ def load() -> dict:
 
 
 def expand(path: str) -> str:
-    return os.path.expanduser(path)
+    """`~` and environment variables, both.
+
+    Variables matter more on Windows than the `~` does. `%APPDATA%` is not
+    reliably `~/AppData/Roaming` — it is redirected on domain-joined machines
+    and by roaming profiles — and `%OneDrive%` is the only dependable way to
+    find a folder that may be called `OneDrive`, `OneDrive - Contoso`, or a
+    localized variant. Writing those paths out by hand works on the machine
+    they were written on and quietly matches nothing elsewhere.
+    """
+    return os.path.expanduser(os.path.expandvars(path))
 
 
 # Windows differs from macOS in two ways that matter to every path comparison
@@ -160,15 +174,38 @@ def parse_iso(value):
         return None
 
 
-def nfc(path: str) -> str:
-    """Normalize a path to NFC.
+_EXTENDED = "\\\\?\\"
+_EXTENDED_UNC = "\\\\?\\UNC\\"
 
-    macOS returns Korean path components decomposed (NFD, jamo-by-jamo) from
-    the filesystem, while the session records carry them composed (NFC). The
-    two look identical on screen but are different strings, so the same folder
-    would otherwise split into two projects that never merge.
+
+def nfc(path: str) -> str:
+    """Put a path from a session log into the form the rest of the code compares.
+
+    Two normalizations, one per platform, both of which produce a string that
+    *looks* identical to the right answer and is not equal to it.
+
+    **Unicode form.** macOS returns Korean path components decomposed (NFD,
+    jamo-by-jamo) from the filesystem, while the session records carry them
+    composed (NFC). The same folder would otherwise split into two projects
+    that never merge.
+
+    **Extended-length prefix.** Codex records working directories as
+    `\\\\?\\D:\\work\\app`, not `D:\\work\\app`. Every container and never rule
+    in `project_roots.py` is a string comparison against paths written without
+    it, so none of them matched: the walk upward ran past the home directory —
+    which is a git repository here, and therefore carries a root marker — and
+    returned **the home directory itself as a project named after the Windows
+    account**. Measured: `\\\\?\\C:\\Users\\<account>\\some-project` produced the
+    label `<account>`, and so did every other extended path on the machine.
+    Wrong attribution, and an account name published to Notion.
     """
-    return unicodedata.normalize("NFC", path) if path else path
+    if not path:
+        return path
+    if path.startswith(_EXTENDED_UNC):
+        path = "\\\\" + path[len(_EXTENDED_UNC):]
+    elif path.startswith(_EXTENDED):
+        path = path[len(_EXTENDED):]
+    return unicodedata.normalize("NFC", path)
 
 
 def is_excluded(path: str) -> bool:

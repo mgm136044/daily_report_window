@@ -16,10 +16,16 @@ import sys
 import traceback
 from datetime import datetime, timedelta
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-STATE_DIR = os.path.join(HERE, "state")
-WORK_DIR = os.path.join(HERE, "work")
-LOG_DIR = os.path.join(HERE, "logs")
+import paths  # noqa: E402 — needed before the log redirect below
+
+# Everything here is written, so it all follows the data root. From a checkout
+# that is the source directory, exactly as before; frozen, it is a directory
+# that outlives the process — a bundle's extraction directory is deleted on
+# exit, which would silently discard the ledger after every single run.
+HERE = paths.data_root()
+STATE_DIR = paths.data("state")
+WORK_DIR = paths.data("work")
+LOG_DIR = paths.data("logs")
 LASTRUN_PATH = os.path.join(STATE_DIR, "lastrun.json")
 LOCK_PATH = os.path.join(STATE_DIR, "run.lock")
 
@@ -216,6 +222,106 @@ def first_sentences(markdown: str, count: int = SUMMARY_SENTENCES) -> str:
     return " ".join(sentences[:count])
 
 
+REGRESSION_BASELINE_DAYS = 7
+REGRESSION_MIN_SAMPLES = 3
+ALERT_COOLDOWN_DAYS = 7
+
+# The zero that means "nothing happened today" rather than "nothing ran today".
+NO_ACTIVITY = "활동 없음"
+
+
+def _baseline(state: dict, before: str, key: str) -> list[int]:
+    """The metric's recent history, most recent first, excluding `before`."""
+    completed = state.get("completed") or {}
+    days = sorted((day for day, entry in completed.items()
+                   if day < before and not entry.get("skipped")
+                   and isinstance(entry.get(key), int)),
+                  reverse=True)
+    return [completed[day][key] for day in days[:REGRESSION_BASELINE_DAYS]]
+
+
+def detect_regression(state: dict, date_str: str, result: dict | None = None) -> list[tuple[str, str]]:
+    """Metrics that used to be non-zero and today are not.
+
+    The job already shouts when it raises. What it cannot see is the failure
+    that produces a clean run and an empty report — and every silent defect
+    found while porting to Windows was of exactly that shape: a path test that
+    rejected every session, an exclusion list that matched nothing, a search
+    root pointed at the wrong drive. Each one exited 0 and wrote "활동 없음"
+    every night.
+
+    The whole difficulty here is not detecting the zero, it is not crying wolf
+    about it. A weekend really is zero. So:
+
+      - the comparison is against a **median**, which a single heavy day cannot
+        drag upward the way a mean can;
+      - a metric that was already zero says nothing — this reports a *change*,
+        not a low number;
+      - too few samples means no verdict rather than a guess.
+
+    Returns (cause, message) pairs. Rate limiting belongs to the notifier, not
+    here, so `doctor.py` can state the condition every time it is asked.
+    """
+    from statistics import median
+
+    if not config.load().get("run", {}).get("regression_alerts", True):
+        return []
+
+    if result is None:
+        result = (state.get("completed") or {}).get(date_str) or {}
+    skipped = result.get("skipped")
+    if skipped and skipped != NO_ACTIVITY:
+        return []  # the day never ran; there is nothing to compare it against
+
+    found: list[tuple[str, str]] = []
+
+    # Configuration that guarantees a zero forever, whatever the history says.
+    authors = [a for a in config.load()["git"].get("authors", []) if a and a.strip()]
+    if not authors:
+        found.append(("git_authors_empty",
+                      "git.authors 가 비어 커밋을 하나도 수집하지 않습니다"))
+
+    projects = result.get("projects", 0)
+    project_history = _baseline(state, date_str, "projects")
+    if (projects == 0 and len(project_history) >= REGRESSION_MIN_SAMPLES
+            and median(project_history) > 0):
+        found.append(("projects_zero",
+                      f"수집이 프로젝트를 하나도 찾지 못했습니다 "
+                      f"(최근 {len(project_history)}일 중앙값 {median(project_history):g})"))
+
+    # Only worth saying when collection itself worked — otherwise the line
+    # above is the real story and this would just repeat it.
+    commit_history = _baseline(state, date_str, "commits")
+    if (projects > 0 and authors and result.get("commits", 0) == 0
+            and len(commit_history) >= REGRESSION_MIN_SAMPLES
+            and median(commit_history) > 0):
+        found.append(("commits_zero",
+                      f"커밋만 0 입니다 — git_search_root 또는 git.authors 확인 "
+                      f"(최근 {len(commit_history)}일 중앙값 {median(commit_history):g})"))
+    return found
+
+
+def alert_is_due(state: dict, cause: str, today: str) -> bool:
+    """Has this cause been quiet long enough to be worth saying again?
+
+    A misconfiguration persists until someone fixes it, so an unthrottled
+    alert fires every night and becomes the notification people dismiss
+    without reading — which is the same as having none.
+    """
+    last = (state.get("alerts") or {}).get(cause)
+    if not last:
+        return True
+    try:
+        elapsed = datetime.strptime(today, "%Y-%m-%d") - datetime.strptime(last, "%Y-%m-%d")
+    except ValueError:
+        return True
+    return elapsed >= timedelta(days=ALERT_COOLDOWN_DAYS)
+
+
+def record_alert(state: dict, cause: str, today: str) -> None:
+    state.setdefault("alerts", {})[cause] = today
+
+
 def source_reference(path: str) -> str:
     """Where the row's digest came from, as short a path as is truthful.
 
@@ -349,6 +455,7 @@ def main() -> int:
 
     watchdog_sec = config.load().get("run", {}).get("watchdog_sec", 0)
     ok, failed = 0, []
+    regressions: dict[str, str] = {}
     # Held for the whole run and released after. On macOS the scheduler already
     # wraps the process in caffeinate and this is a no-op; on Windows there is
     # nothing to wrap with, so the assertion is taken from inside instead.
@@ -365,6 +472,11 @@ def main() -> int:
                           f"파일 {result['files']} · 커밋 {result['commits']} · "
                           f"보고서 {result['report_chars']:,}자 · "
                           f"살균 {result['digest_findings'] or '0건'}")
+                # Judged before the ledger gains today's entry, so the
+                # baseline is history rather than a set containing the day
+                # being judged.
+                for cause, message in detect_regression(state, date_str, result):
+                    regressions.setdefault(cause, message)
                 state.setdefault("completed", {})[date_str] = {
                     "at": started.isoformat(timespec="seconds"),
                     **{k: v for k, v in result.items() if k != "date"},
@@ -381,11 +493,37 @@ def main() -> int:
     if pruned:
         print(f"오래된 중간 산출물 {pruned}개 정리.")
 
+    report_regressions(state, regressions)
+
     if failed:
         notify("하루 마감 보고서 실패", f"{len(failed)}일 실패: {', '.join(failed)}")
         return 1
     print(f"완료 {ok}일.")
     return 0
+
+
+def report_regressions(state: dict, regressions: dict[str, str]) -> None:
+    """Say something about a run that succeeded at producing nothing.
+
+    Printed every time — the log is where someone looks on purpose. Notified
+    only when the cause has been quiet for the cooldown, because the alert
+    people learn to dismiss is worth less than no alert at all.
+    """
+    if not regressions:
+        return
+    today = config.logical_date(datetime.now(config.local_tz()))
+    for message in regressions.values():
+        print(f"⚠️  {message}")
+
+    due = {cause: message for cause, message in regressions.items()
+           if alert_is_due(state, cause, today)}
+    if not due:
+        print(f"   (알림은 {ALERT_COOLDOWN_DAYS}일에 한 번만 보냅니다 — 이번엔 생략)")
+        return
+    for cause in due:
+        record_alert(state, cause, today)
+    write_state(state)
+    notify("하루 마감 보고서 — 확인 필요", "\n".join(due.values()))
 
 
 if __name__ == "__main__":

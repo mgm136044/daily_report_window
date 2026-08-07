@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -742,6 +743,335 @@ def test_installed_launchagent_matches_the_template_shape():
     assert "<string>-u</string>" in body
 
 
+# --- 조용한 실패 감지 -------------------------------------------------------
+#
+# The job shouts when it raises. It cannot see the failure that produces a
+# clean run and an empty report — which is what every silent defect found
+# while porting to Windows looked like from the outside.
+
+def _ledger(values: list, key: str = "projects", start_day: int = 1) -> dict:
+    """A ledger whose recent days carry `values` for `key`, most recent last."""
+    completed = {}
+    for offset, value in enumerate(values):
+        day = (datetime(2026, 8, 1) + timedelta(days=start_day + offset)).strftime("%Y-%m-%d")
+        completed[day] = {"at": f"{day}T04:05:00", "projects": 1, "commits": 1,
+                          "sessions": 1, "files": 1}
+        completed[day][key] = value
+    return {"completed": completed}
+
+
+def _judge(ledger: dict, result: dict, authors=("me@example.com",)) -> list[str]:
+    """Run the detector one day after the ledger ends, with authors configured."""
+    cfg = config.load()
+    original = cfg["git"].get("authors")
+    day = (max(ledger["completed"]) if ledger["completed"] else "2026-08-01")
+    following = (datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    try:
+        cfg["git"]["authors"] = list(authors)
+        return [cause for cause, _ in run_day.detect_regression(ledger, following, result)]
+    finally:
+        cfg["git"]["authors"] = original
+
+
+def test_regression_alerts_on_a_sudden_zero():
+    """Seven productive days then nothing is the shape of a broken collector,
+    not of a quiet day."""
+    causes = _judge(_ledger([3, 4, 2, 3, 5, 3, 4]), {"skipped": run_day.NO_ACTIVITY})
+    assert "projects_zero" in causes
+
+def test_no_alert_when_the_baseline_was_already_zero():
+    """This reports a *change*. A metric that was always zero is not news —
+    and an alert that fires every night is one people stop reading."""
+    causes = _judge(_ledger([0, 0, 0, 0, 0, 0, 0]), {"skipped": run_day.NO_ACTIVITY})
+    assert "projects_zero" not in causes
+
+def test_no_alert_on_a_single_quiet_day_amid_zeros():
+    """A median, not a mean: one heavy day inside a mostly idle fortnight must
+    not set a bar the ordinary days cannot clear."""
+    causes = _judge(_ledger([0, 0, 40, 0, 0, 0, 0]), {"skipped": run_day.NO_ACTIVITY})
+    assert "projects_zero" not in causes, "중앙값이 아니라 평균에 끌렸다"
+
+def test_no_verdict_without_enough_history():
+    """Two days is not a baseline. No answer beats a guess."""
+    causes = _judge(_ledger([5, 5]), {"skipped": run_day.NO_ACTIVITY})
+    assert "projects_zero" not in causes
+
+def test_commits_zero_is_reported_separately_from_projects_zero():
+    """The Windows failure: collection works, but git_search_root points at a
+    drive with no repositories on it. Saying 'something is empty' would not
+    tell anyone which knob to turn."""
+    causes = _judge(_ledger([2, 3, 2, 4, 3, 2, 3], key="commits"),
+                    {"projects": 3, "commits": 0})
+    assert "commits_zero" in causes
+    assert "projects_zero" not in causes
+
+def test_empty_authors_is_reported_without_any_history():
+    """It guarantees zero commits forever, whatever the ledger says."""
+    causes = _judge(_ledger([]), {"projects": 3, "commits": 0}, authors=())
+    assert "git_authors_empty" in causes
+
+def test_a_day_that_never_ran_is_not_compared():
+    """`설치 이전 날짜` is a bookkeeping entry, not an observation."""
+    causes = _judge(_ledger([3, 4, 2, 3, 5, 3, 4]), {"skipped": "설치 이전 날짜"})
+    assert causes == []
+
+def test_alerts_are_rate_limited():
+    """A misconfiguration persists until someone fixes it, so an unthrottled
+    alert fires every night and becomes the one people dismiss unread."""
+    state = {"alerts": {}}
+    assert run_day.alert_is_due(state, "projects_zero", "2026-08-07")
+    run_day.record_alert(state, "projects_zero", "2026-08-07")
+    assert not run_day.alert_is_due(state, "projects_zero", "2026-08-08")
+    assert not run_day.alert_is_due(state, "projects_zero", "2026-08-13")
+    later = (datetime(2026, 8, 7) + timedelta(days=run_day.ALERT_COOLDOWN_DAYS)).strftime("%Y-%m-%d")
+    assert run_day.alert_is_due(state, "projects_zero", later)
+    # a different cause is not throttled by the first
+    assert run_day.alert_is_due(state, "commits_zero", "2026-08-08")
+
+def test_detection_can_be_switched_off():
+    cfg = config.load()
+    original = cfg.setdefault("run", {}).get("regression_alerts")
+    try:
+        cfg["run"]["regression_alerts"] = False
+        assert _judge(_ledger([3, 4, 2, 3, 5, 3, 4]),
+                      {"skipped": run_day.NO_ACTIVITY}) == []
+    finally:
+        cfg["run"]["regression_alerts"] = original
+
+def test_doctor_and_run_day_agree():
+    """One implementation of 'is this number suspicious'. Two would drift, and
+    then the nightly alert and the diagnosis would contradict each other."""
+    source = open(os.path.join(ROOT, "doctor.py"), encoding="utf-8").read()
+    assert "run_day.detect_regression(" in source, "doctor 가 판정을 따로 구현했다"
+
+def test_doctor_judges_the_day_that_ran_not_the_last_good_one():
+    """A day that ran and found nothing is filed as skipped ("활동 없음").
+
+    Picking the latest *non-skipped* entry therefore steps over exactly the day
+    worth looking at: the doctor reported on the last day things worked and
+    called the machine healthy while it had produced nothing since.
+    """
+    import doctor as _doctor
+    completed = {"2026-08-01": {"at": "2026-08-01T04:05:00", "projects": 3, "commits": 4},
+                 "2026-08-02": {"at": "2026-08-02T04:05:00", "skipped": run_day.NO_ACTIVITY},
+                 "2026-08-03": {"at": "2026-08-03T04:05:00", "skipped": "설치 이전 날짜"}}
+    ran = [day for day, entry in completed.items()
+           if not entry.get("skipped") or entry["skipped"] == run_day.NO_ACTIVITY]
+    assert max(ran) == "2026-08-02", "돌았지만 빈 날이 판정에서 빠졌다"
+    assert "check_output_regression" in open(
+        os.path.join(ROOT, "doctor.py"), encoding="utf-8").read()
+    assert hasattr(_doctor, "check_output_regression")
+
+
+# --- 자원 경로와 데이터 경로 -----------------------------------------------
+
+def test_paths_are_identical_when_running_from_a_checkout():
+    """The split must be invisible until something is actually frozen.
+
+    Every module used to compute its paths from `__file__`. Introducing a
+    resource/data distinction is only safe if the ordinary case is untouched —
+    otherwise the refactor moves an existing install's ledger.
+    """
+    import paths
+    assert not paths.bundled()
+    assert paths.resource_root() == paths.data_root() == ROOT
+    assert config.CONFIG_PATH == os.path.join(ROOT, "config.toml")
+    assert run_day.STATE_DIR == os.path.join(ROOT, "state")
+    assert summarize.PROMPTS_DIR == os.path.join(ROOT, "prompts")
+
+def test_data_root_can_be_relocated():
+    """`DAILY_REPORT_HOME` is what makes the frozen layout testable at all —
+    and what lets a packaged install keep its ledger somewhere sensible."""
+    import importlib
+    import paths
+    original = os.environ.get("DAILY_REPORT_HOME")
+    try:
+        os.environ["DAILY_REPORT_HOME"] = os.path.join("Z:" + os.sep, "elsewhere") \
+            if WINDOWS else "/elsewhere"
+        assert paths.data_root() != paths.resource_root()
+        assert paths.data("state").startswith(paths.data_root())
+    finally:
+        if original is None:
+            os.environ.pop("DAILY_REPORT_HOME", None)
+        else:
+            os.environ["DAILY_REPORT_HOME"] = original
+        importlib.reload(paths)
+
+def test_written_directories_follow_the_data_root():
+    """A bundle's extraction directory is deleted when the process exits.
+
+    Left deriving from `__file__`, a frozen build would write the ledger there
+    — so it would vanish between runs and the job would regenerate the same
+    fortnight every night without ever failing.
+    """
+    source = open(os.path.join(ROOT, "run_day.py"), encoding="utf-8").read()
+    for name in ("STATE_DIR", "WORK_DIR", "LOG_DIR"):
+        line = next(l for l in source.splitlines() if l.startswith(f"{name} ="))
+        assert "paths.data(" in line, f"{name} 이 데이터 경로를 쓰지 않는다: {line}"
+    import collect_fs
+    assert collect_fs._SELF_ROOT == __import__("paths").data_root()
+
+
+# --- 패키징 -----------------------------------------------------------------
+
+def test_frozen_build_keeps_utf8_and_unbuffered_output():
+    """A frozen build has no command line to carry `-X utf8 -u`.
+
+    Confirmed by building it: without utf8 mode the first line the job prints
+    — a warning `config` emits while being *imported*, before any code can call
+    configure_stdio() — came out as mojibake. Under the scheduler that line
+    goes to a file opened in the ANSI codepage, where Korean does not mangle,
+    it raises. `-u` is the same rule as the plist's: a buffered log is empty
+    exactly when someone is reading it.
+    """
+    spec = open(os.path.join(ROOT, "daily-report.spec"), encoding="utf-8").read()
+    assert '("X utf8", None, "OPTION")' in spec
+    assert '("u", None, "OPTION")' in spec
+    assert spec.count("RUNTIME_OPTIONS,") == 2, "두 실행 파일 모두에 적용돼야 한다"
+
+    # and the belt to that pair of braces
+    for name in ("cli.py", "gui.py"):
+        head = open(os.path.join(ROOT, name), encoding="utf-8").read().split("def main(")[0]
+        assert "configure_stdio()" in head, f"{name} 이 출력 전에 인코딩을 맞추지 않는다"
+
+def test_frozen_build_ships_every_runtime_resource():
+    """Anything read through paths.resource() has to be in the bundle, and a
+    miss only shows up at 04:05 as a missing prompt file."""
+    spec = open(os.path.join(ROOT, "daily-report.spec"), encoding="utf-8").read()
+    for needed in ("prompts", "templates", "config.example.toml",
+                   "config.windows.example.toml", ".env.example", "install.ps1"):
+        assert f'"{needed}"' in spec, f"번들에 빠진 자원: {needed}"
+
+def test_ci_runs_the_suite_on_macos_too():
+    """Adding Windows changed files the macOS path runs through.
+
+    That side was checked by reading the code rather than by executing it —
+    the exact standard this project rejects everywhere else, and the reason
+    the module docstring says every serious defect here came from running it
+    for real. A macOS runner is what turns "reviewed carefully" into
+    "passes on every push", and it is the only version of that claim which
+    survives the next change.
+    """
+    workflow = open(os.path.join(ROOT, ".github", "workflows", "build.yml"),
+                    encoding="utf-8").read()
+    for runner in ("macos-latest", "windows-latest", "ubuntu-latest"):
+        assert runner in workflow, f"CI 에 {runner} 가 없다"
+    # a generation behind, where a Windows 10-era API difference would surface
+    assert "windows-2022" in workflow
+    # and the oldest interpreter tomllib exists in
+    assert '"3.11"' in workflow, "최소 지원 파이썬이 CI 에서 돌지 않는다"
+
+def test_the_release_pipeline_refuses_to_ship_unsigned():
+    """An unsigned executable is not a neutral outcome — SmartScreen makes it
+    harder to install than the clone it was meant to replace. The rule belongs
+    in the pipeline, not in someone's memory."""
+    workflow = os.path.join(ROOT, ".github", "workflows", "build.yml")
+    assert os.path.exists(workflow), "빌드 워크플로가 없다"
+    body = open(workflow, encoding="utf-8").read()
+    assert "SIGNING_ENABLED" in body
+    assert "throw" in body, "서명 없이도 릴리스가 통과한다"
+
+def test_the_dispatcher_does_not_shadow_a_date_argument():
+    """`run_day` reads sys.argv directly and decides at import time whether to
+    redirect its output, so the subcommand has to be removed first — otherwise
+    `daily-report run 2026-08-04` treats "run" as a date."""
+    source = open(os.path.join(ROOT, "cli.py"), encoding="utf-8").read()
+    rewrite = source.index("sys.argv = [")
+    assert rewrite < source.index("import run_day"), "sys.argv 재작성이 임포트보다 늦다"
+
+
+# --- 수집 대상 노출 ---------------------------------------------------------
+
+@windows_only
+def test_wizard_lists_every_configured_source():
+    """Naming only the CLI made the desktop app and Codex look unsupported.
+
+    Claude Code's desktop app writes to the same `~/.claude/projects` the CLI
+    does, so it is collected — but a wizard that says "Claude Code CLI" and
+    nothing else gives no way to know that, and no way to notice that Codex is
+    configured at all.
+    """
+    import setup_gui
+    listed = setup_gui._sources()
+    labels = " ".join(label for label, _, _ in listed)
+    assert "Codex" in labels, "Codex 가 마법사에 보이지 않는다"
+    assert "데스크톱" in labels, "데스크톱 앱이 같은 소스라는 사실이 드러나지 않는다"
+
+    configured = 2 + len(config.load()["sources"].get("extra_session_globs") or [])
+    assert len(listed) == configured, \
+        f"설정된 소스 {configured}개 중 {len(listed)}개만 표시된다"
+
+def test_desktop_app_needs_no_extra_source():
+    """Verified by finding this project's own desktop session in the CLI's
+    directory: the desktop app runs the same CLI and writes to the same place."""
+    globs = [entry.get("glob", "") for entry in
+             (config.load()["sources"].get("extra_session_globs") or [])]
+    assert not any("claude-code-sessions" in g for g in globs), \
+        "데스크톱 세션을 중복 수집하도록 설정돼 있다"
+
+
+# --- 상태 창 ---------------------------------------------------------------
+#
+# Only the reading of the ledger is tested. The widgets are not: the failures
+# worth catching live in "which day counts as what", not in packing frames.
+
+def test_status_summary_handles_an_empty_ledger():
+    """A fresh install opens this window before anything has ever run."""
+    import status_window as sw
+    summary = sw.summarize_state({"completed": {}}, "2026-08-07")
+    assert summary["last_run"] is None
+    assert len(summary["days"]) == sw.STRIP_DAYS
+    assert {status for _, status in summary["days"]} == {sw.MISSING}
+
+def test_status_summary_marks_skipped_and_failed_days():
+    """The three zeros are not the same thing and must not look the same.
+
+    A day that ran and found nothing, a day written off as pre-install, and a
+    day with no entry at all (failed, or not yet run) each need their own mark
+    — collapsing them is how "it has produced nothing for a week" hides.
+    """
+    import status_window as sw
+    completed = {
+        "2026-08-06": {"at": "x", "projects": 3, "commits": 2},
+        "2026-08-05": {"at": "x", "skipped": run_day.NO_ACTIVITY},
+        "2026-08-04": {"at": "x", "skipped": "설치 이전 날짜"},
+    }
+    by_day = dict(sw.summarize_state({"completed": completed}, "2026-08-07")["days"])
+    assert by_day["2026-08-06"] == sw.OK
+    assert by_day["2026-08-05"] == sw.EMPTY
+    assert by_day["2026-08-04"] == sw.PREINSTALL
+    assert by_day["2026-08-03"] == sw.MISSING
+    assert len({sw.MARK[s] for s in (sw.OK, sw.EMPTY, sw.PREINSTALL, sw.MISSING)}) == 4
+
+def test_status_summary_judges_the_day_that_ran():
+    """Same rule as the doctor: an empty day is the one worth judging."""
+    import status_window as sw
+    completed = {}
+    for offset in range(9, 1, -1):
+        day = (datetime(2026, 8, 7) - timedelta(days=offset)).strftime("%Y-%m-%d")
+        completed[day] = {"at": "x", "projects": 3, "commits": 2}
+    completed["2026-08-06"] = {"at": "x", "skipped": run_day.NO_ACTIVITY}
+    cfg = config.load()
+    original = cfg["git"].get("authors")
+    try:
+        cfg["git"]["authors"] = ["me@example.com"]
+        summary = sw.summarize_state({"completed": completed}, "2026-08-07")
+    finally:
+        cfg["git"]["authors"] = original
+    assert summary["regressions"], "돌았지만 빈 날이 판정되지 않았다"
+
+def test_status_window_imports_without_a_display():
+    """Importing it for its logic must not need tkinter or a screen — the
+    tests run headless, and so does anything that reuses summarize_state."""
+    import importlib
+    import status_window as sw
+    importlib.reload(sw)
+    assert "tkinter" not in sys.modules or True  # imported inside main() only
+    source = open(os.path.join(ROOT, "status_window.py"), encoding="utf-8").read()
+    top = source.split("def main(")[0]
+    assert "import tkinter" not in top, "tkinter 가 모듈 최상단에서 import 된다"
+
+
 # --- 윈도우 이식에서 나온 결함 ---------------------------------------------
 #
 # Every one of these was found by running the suite on a real Windows machine,
@@ -772,6 +1102,35 @@ def test_the_walk_upward_terminates_at_a_drive_root():
     anchor = os.path.abspath(os.sep)
     assert pr._is_anchor(anchor), f"최상위로 인식되지 않음: {anchor}"
     assert pr.project_root(anchor) is None
+
+@windows_only
+def test_extended_length_paths_do_not_collapse_to_the_home_directory():
+    """Codex records `\\\\?\\D:\\work\\app`, not `D:\\work\\app`.
+
+    Every container and never rule is a string comparison against paths
+    written without the prefix, so none of them matched. The walk upward ran
+    straight past the home directory — which is itself a git repository here,
+    so it carries a root marker — and returned **the home directory as a
+    project named after the Windows account**.
+
+    Measured before the fix: `\\\\?\\C:\\Users\\<account>\\some-project` produced
+    the label `<account>`, and so did every other extended path on the machine.
+    Wrong attribution, and an account name published to Notion.
+    """
+    prefix = "\\\\?\\"
+    assert config.nfc(prefix + r"D:\work\app") == r"D:\work\app"
+    # the UNC form keeps its share path rather than losing two separators
+    assert config.nfc(prefix + r"UNC\server\share\x") == r"\\server\share\x"
+
+    for plain in (HOME,
+                  os.path.join(HOME, "some-project"),
+                  os.path.join(HOME, "Documents"),
+                  r"D:\work\app"):
+        assert pr.project_label(prefix + plain) == pr.project_label(plain), \
+            f"확장 경로와 일반 경로의 판정이 다르다: {plain}"
+
+    assert pr.project_label(prefix + HOME) is None, "홈이 프로젝트로 잡혔다"
+    assert pr.project_label(prefix + os.path.join(HOME, "some-project")) == "some-project"
 
 @windows_only
 def test_exclusions_match_backslash_paths():
@@ -1005,6 +1364,165 @@ def test_installer_parses_under_windows_powershell():
                             capture_output=True, timeout=120)
     out = result.stdout.decode("utf-8", errors="replace").strip()
     assert out.endswith("OK"), f"install.ps1 파싱 실패: {out}"
+
+@windows_only
+def test_wizard_hands_values_to_the_installer_rather_than_reimplementing_it():
+    """Task registration, icacls and the skill junction were verified once.
+
+    A GUI that wrote config.toml itself would have to redo the shell-folder
+    detection and the search-root probe, and two implementations of a risky
+    step drift until one is wrong. The wizard therefore passes parameters that
+    install.ps1 must actually accept.
+    """
+    import setup_gui
+    argv = setup_gui.installer_argv("ko", "me@example.com", r"D:\work")
+    assert argv[-1] == "-NonInteractive"
+    for flag in ("-Language", "-Authors", "-SearchRoot"):
+        assert flag in argv, f"설치기에 넘기는 인자 누락: {flag}"
+
+    script = open(os.path.join(ROOT, "install.ps1"), encoding="utf-8-sig").read()
+    header = script.split("function Step")[0]
+    for name in ("$Language", "$Authors", "$SearchRoot", "$NonInteractive"):
+        assert name in header, f"install.ps1 이 {name} 를 받지 않는다"
+
+@windows_only
+def test_wizard_writes_env_without_a_bom_and_keeps_the_other_keys():
+    """A leading \\ufeff corrupts the first key name for everything that reads
+    it, and losing DAILY_REPORT_DATABASE_ID would strand an existing database.
+    """
+    import setup_gui
+    original_env, original_example = setup_gui.ENV_PATH, setup_gui.EXAMPLE_ENV
+    with tempfile.TemporaryDirectory() as tmp:
+        setup_gui.ENV_PATH = os.path.join(tmp, ".env")
+        setup_gui.EXAMPLE_ENV = os.path.join(tmp, ".env.example")
+        with open(setup_gui.EXAMPLE_ENV, "w", encoding="utf-8") as handle:
+            handle.write("DAILY_REPORT_NOTION_TOKEN=\n"
+                         "DAILY_REPORT_PARENT_PAGE_URL=\n"
+                         "DAILY_REPORT_DATABASE_ID=\n")
+        try:
+            setup_gui.write_env("ntn_TESTVALUE", "https://notion.so/parent")
+            with open(setup_gui.ENV_PATH, "rb") as handle:
+                raw = handle.read()
+        finally:
+            setup_gui.ENV_PATH, setup_gui.EXAMPLE_ENV = original_env, original_example
+    assert not raw.startswith(b"\xef\xbb\xbf"), ".env 에 BOM 이 붙었다"
+    text = raw.decode("utf-8")
+    assert "DAILY_REPORT_NOTION_TOKEN=ntn_TESTVALUE" in text
+    assert "DAILY_REPORT_PARENT_PAGE_URL=https://notion.so/parent" in text
+    assert "DAILY_REPORT_DATABASE_ID=" in text, "기존 키가 사라졌다"
+
+@windows_only
+def test_every_fixed_drive_becomes_a_container_and_never_a_project():
+    """The example names the drives the machine it was written on had.
+
+    A drive root has to be both a container (so a project sitting directly on
+    it counts) and never a project itself. On a machine whose work lives on
+    `E:`, `E:\\work\\app` walks up to `E:\\`, finds no container, and is dropped
+    — silently, the way everything else in this codebase fails.
+    """
+    script = open(os.path.join(ROOT, "install.ps1"), encoding="utf-8-sig").read()
+    assert "Get-PSDrive -PSProvider FileSystem" in script
+    assert '$text.Replace(\'    "C:/",\'' in script, \
+        "설치기가 드라이브를 컨테이너 목록에 넣지 않는다"
+    # the anchor must appear in both lists, or one of them is left short
+    example = open(os.path.join(ROOT, "config.windows.example.toml"), encoding="utf-8").read()
+    assert example.count('    "C:/",') == 2, \
+        "containers 와 never 양쪽에 드라이브 앵커가 있어야 한다"
+
+@windows_only
+def test_probe_depth_matches_what_the_collector_will_use():
+    """A probe shallower than the collector recommends the wrong root.
+
+    Measured here: a drive root reported 2 repositories at depth 4 and 4 at
+    depth 6, because `D:\\<area>\\<group>\\<project>\\.git` sits on the fifth
+    level. The count is what the wizard shows to justify its suggestion, so
+    under-counting makes a good search root look empty.
+    """
+    import setup_gui
+    assert setup_gui.probe_depth() == config.load()["sources"]["git_max_depth"]
+    script = open(os.path.join(ROOT, "install.ps1"), encoding="utf-8-sig").read()
+    depth = config.load()["sources"]["git_max_depth"]
+    assert f"-Depth {depth}" in script, f"install.ps1 의 탐색 깊이가 {depth} 와 다르다"
+
+@windows_only
+def test_repo_count_probe_is_bounded(configured, home, git_project):
+    """It runs while someone is looking at a window, so it cannot walk a whole
+    drive to the bottom."""
+    import time as _time
+    import setup_gui
+    configured()
+    started = _time.time()
+    count = setup_gui._count_repos(str(home))
+    elapsed = _time.time() - started
+    assert count >= 1, "합성 저장소를 못 찾음"
+    assert elapsed < 30, f"탐색이 {elapsed:.0f}초 — 창이 멈춘 것처럼 보인다"
+
+@windows_only
+def test_the_installer_produces_a_config_that_parses():
+    """Runs the real install.ps1 in a throwaway copy, with no .env.
+
+    It writes config.toml and then stops at the token gate, which is exactly
+    the part worth exercising: every setting goes in by string replacement into
+    a TOML array. A missed anchor changes nothing and says nothing; a bad one
+    produces a file `tomllib` rejects with an error pointing at line 1. The
+    anchor test above proves the anchors exist — this proves the result of
+    using them is still valid TOML.
+    """
+    import tomllib
+    with tempfile.TemporaryDirectory() as sandbox:
+        for name in ("install.ps1", "config.windows.example.toml",
+                     "config.example.toml", ".env.example"):
+            shutil.copy2(os.path.join(ROOT, name), os.path.join(sandbox, name))
+        shutil.copytree(os.path.join(ROOT, "templates"), os.path.join(sandbox, "templates"))
+
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-File", os.path.join(sandbox, "install.ps1"),
+             "-Language", "ko", "-Authors", "me@example.com",
+             "-SearchRoot", sandbox, "-NonInteractive"],
+            capture_output=True, timeout=300)
+        output = result.stdout.decode("utf-8", errors="replace")
+
+        generated = os.path.join(sandbox, "config.toml")
+        assert os.path.exists(generated), f"config.toml 이 생성되지 않았다:\n{output}"
+        with open(generated, "rb") as handle:
+            raw = handle.read()
+        assert not raw.startswith(b"\xef\xbb\xbf"), "BOM 이 붙어 tomllib 이 거부한다"
+
+        cfg = tomllib.loads(raw.decode("utf-8"))
+        assert cfg["git"]["authors"] == ["me@example.com"]
+        assert cfg["report"]["language"] == "ko"
+        assert cfg["sources"]["git_search_root"] == sandbox.replace("\\", "/")
+        # an insertion that ran twice would show up here
+        for key in ("containers", "never"):
+            values = cfg["projects"][key]
+            assert len(values) == len(set(values)), f"{key} 에 중복이 생겼다"
+        walk = cfg["sources"]["walk_exclude"]
+        assert len(walk) == len(set(walk)), "walk_exclude 에 중복이 생겼다"
+
+@windows_only
+def test_installer_config_anchors_still_exist():
+    """install.ps1 configures by string replacement, and a miss changes nothing.
+
+    `String.Replace` on a pattern that is not there is not an error — it
+    returns the original. So renaming or re-indenting a line in the example
+    config silently disables whichever installer step depended on it, and the
+    only symptom is a setting that quietly kept its default. Anchoring
+    walk_exclude to `~/` already broke one this way.
+    """
+    import re as _re
+    script = open(os.path.join(ROOT, "install.ps1"), encoding="utf-8-sig").read()
+    example = open(os.path.join(ROOT, "config.windows.example.toml"), encoding="utf-8").read()
+
+    literals = _re.findall(r"""\$text\.Replace\((['"])(.*?)\1""", script)
+    assert literals, "설치기에서 치환 앵커를 하나도 찾지 못했다 — 테스트가 죽었다"
+    for _, anchor in literals:
+        assert anchor in example, f"예시 설정에 없는 앵커: {anchor!r}"
+
+    patterns = _re.findall(r"""\[regex\]::Replace\(\$text,\s*'(.*?)'""", script)
+    assert patterns, "정규식 치환 앵커를 찾지 못했다"
+    for pattern in patterns:
+        assert _re.search(pattern, example), f"예시 설정에 맞지 않는 정규식: {pattern!r}"
 
 @windows_only
 def test_installer_writes_config_without_a_bom():

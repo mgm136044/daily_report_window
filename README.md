@@ -134,6 +134,31 @@ python3 doctor.py                  # is it working, and if not, why
 Re-running a date overwrites its row rather than adding one. If a report reads
 badly, run it again.
 
+On Windows there are two windows as well, both plain tkinter — no dependency,
+because "there is nothing to install" is worth more than a nicer toolkit:
+
+```bash
+python status_window.py
+```
+
+Last run, next run, the last fourteen days as a strip, and buttons for the
+commands above. `install.ps1` puts a Start Menu shortcut to it.
+
+```bash
+python setup_gui.py
+```
+
+The setup wizard. It collects the answers and then runs `install.ps1` — it does
+not reimplement it, because the task registration and the permission narrowing
+were verified once and two implementations of a risky step drift. The one thing
+it does itself is the token field, and that is the point: the README tells you
+not to paste the token into a terminal because this tool exists on the premise
+that session logs keep everything you type. A GUI field is not logged.
+
+**Nothing is required to run unattended.** The job is a scheduled task; these
+are for the two moments a person is actually present — first setup, and "why
+did nothing happen last night".
+
 ## Configuration
 
 Everything lives in `config.toml`; the code is not meant to be edited to
@@ -231,6 +256,10 @@ so they pass on a machine that has never run this tool.
 | `doctor.py` | diagnostics |
 | `platform_support.py` | everything OS-specific |
 | `config.py` | configuration loading, logical dates |
+| `paths.py` | resources that ship vs. data that is written |
+| `status_window.py` | status and diagnostics window (tkinter, stdlib only) |
+| `setup_gui.py` | setup wizard — collects answers, hands them to `install.ps1` |
+| `cli.py` · `gui.py` · `daily-report.spec` | packaged-build entry points and PyInstaller spec |
 | `install.sh` | one-time install on macOS, safe to re-run |
 | `install.ps1` | one-time install on Windows, safe to re-run |
 | `config.example.toml` | macOS defaults |
@@ -240,9 +269,12 @@ so they pass on a machine that has never run this tool.
 
 ## Known limitations
 
-- **The CLI speaks Korean.** Reports follow `report.language` (`ko` or `en`),
-  and the documentation is bilingual, but the installers, `doctor.py` and the
-  runtime messages are Korean only.
+- **Everything except the report speaks Korean.** `report.language` (`ko` or
+  `en`) selects the language of the report itself, and the documentation is
+  bilingual. Everything else — both installers, `doctor.py`, the runtime
+  messages, and the two windows (`status_window.py`, `setup_gui.py`) — is
+  Korean only: 348 user-facing strings at last count. Configuration and machine
+  detection are locale-independent; the text is not.
 - **Linux is not implemented** — see [Platform support](#platform-support).
 - **The Windows watchdog counts wall-clock time.** `signal.alarm` counts only
   time the process was actually running, so on macOS a run that merely slept is

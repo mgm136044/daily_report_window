@@ -37,8 +37,15 @@ STATE_RETENTION_DAYS = 120
 LOG_MAX_BYTES = 8 * 1024 * 1024
 
 
+_redirected = False
+
+
 def redirect_output() -> None:
     """Bind stdout and stderr to logs/, the way the macOS plist does.
+
+    Idempotent, because two entry points reach it and only one of them can
+    reach it early. See the call sites at the bottom of the imports and in
+    `main()`.
 
     A Task Scheduler Exec action has no StandardOutPath — its output simply
     goes nowhere. Doing the redirection here rather than wrapping the command
@@ -53,6 +60,11 @@ def redirect_output() -> None:
     Also rotates, which launchd never needed: on macOS a log this job appends
     to forever is at least visible in Console. Here nothing else would trim it.
     """
+    global _redirected
+    if _redirected:
+        return
+    _redirected = True
+
     paths.ensure_data_root()
     os.makedirs(LOG_DIR, exist_ok=True)
     for name, attribute in (("stdout.log", "stdout"), ("stderr.log", "stderr")):
@@ -71,6 +83,13 @@ def redirect_output() -> None:
 # Guarded on __main__ as well as the flag: doctor.py and the tests import this
 # module, and neither should have its output diverted because of whatever
 # happens to be on their own command line.
+#
+# This is the *early* call, and it only fires for `python run_day.py --log`,
+# where being above the imports below means an import failure still lands in
+# the log. The packaged build cannot reach it — there `cli.py` imports this
+# module, so __name__ is "run_day" — and `main()` calls again for that case.
+# Missing the second call is how the frozen scheduled task ran with its output
+# going nowhere at all: no console under pythonw, and an empty logs/.
 if __name__ == "__main__" and "--log" in sys.argv:  # noqa: E402
     redirect_output()
 
@@ -416,8 +435,12 @@ def run_one(date_str: str, token: str, database_id: str) -> dict:
 
 def main() -> int:
     platform_support.require_supported()
-    # `--log` was already handled at import time, above the local imports.
-    # This one is for the redirected stream's *encoding*: the file is opened in
+    # The second `--log` call. Redundant when this module was run directly —
+    # redirect_output() is idempotent — and load-bearing when it was imported,
+    # which is what the packaged build does.
+    if "--log" in sys.argv:
+        redirect_output()
+    # And this is for the redirected stream's *encoding*: the file is opened in
     # the ANSI codepage and every message below is Korean.
     platform_support.PLATFORM.configure_stdio()
     ensure_dirs()

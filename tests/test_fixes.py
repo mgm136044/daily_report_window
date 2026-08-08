@@ -1833,6 +1833,75 @@ def test_installer_writes_config_without_a_bom():
     assert '$ConfigPath = Join-Path $DataDir "config.toml"' in body
     assert '$EnvPath    = Join-Path $DataDir ".env"' in body
 
+def test_log_redirection_happens_when_run_day_is_imported_not_only_run():
+    """The packaged build imports this module; it does not execute it.
+
+    The redirect was guarded on `__name__ == "__main__"`, which is true for
+    `python run_day.py --log` and false for the frozen build, where `cli.py`
+    imports it. So the scheduled task ran with its output going nowhere: no
+    console under pythonw, and an empty logs/ — the failure this project is
+    organised against, reached through the thing meant to prevent it.
+
+    Exercised through `main()`, which is the path the dispatcher takes.
+    """
+    original_argv, original_home = sys.argv[:], os.environ.get("DAILY_REPORT_HOME")
+    original_out, original_err = sys.stdout, sys.stderr
+    original_flag = run_day._redirected
+    original_dirs = (run_day.LOG_DIR, run_day.STATE_DIR, run_day.WORK_DIR, run_day.HERE)
+    with tempfile.TemporaryDirectory() as tmp:
+        home = os.path.join(tmp, "data")
+        try:
+            os.environ["DAILY_REPORT_HOME"] = home
+            run_day._redirected = False
+            run_day.HERE = home
+            run_day.LOG_DIR = os.path.join(home, "logs")
+            run_day.STATE_DIR = os.path.join(home, "state")
+            run_day.WORK_DIR = os.path.join(home, "work")
+            sys.argv = ["daily-report", "--log"]
+            # no .env, so main() reports that and returns 1 before doing work —
+            # after the redirect, which is the point
+            code = run_day.main()
+        finally:
+            for handle in (sys.stdout, sys.stderr):
+                if handle not in (original_out, original_err):
+                    handle.close()
+            sys.stdout, sys.stderr = original_out, original_err
+            sys.argv = original_argv
+            run_day._redirected = original_flag
+            (run_day.LOG_DIR, run_day.STATE_DIR,
+             run_day.WORK_DIR, run_day.HERE) = original_dirs
+            if original_home is None:
+                os.environ.pop("DAILY_REPORT_HOME", None)
+            else:
+                os.environ["DAILY_REPORT_HOME"] = original_home
+
+        assert code == 1, "이 시나리오는 .env 없음으로 1 이어야 한다"
+        stderr_log = os.path.join(home, "logs", "stderr.log")
+        assert os.path.exists(stderr_log), "임포트된 경우 로그가 만들어지지 않는다"
+        with open(stderr_log, encoding="utf-8") as handle:
+            assert ".env" in handle.read(), "오류가 로그로 가지 않았다"
+
+def test_redirecting_twice_does_not_lose_the_first_handles():
+    """Both entry points may call it; the second must be a no-op."""
+    original_out, original_err = sys.stdout, sys.stderr
+    original_flag = run_day._redirected
+    original_log = run_day.LOG_DIR
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            run_day._redirected = False
+            run_day.LOG_DIR = tmp
+            run_day.redirect_output()
+            first = sys.stdout
+            run_day.redirect_output()
+            assert sys.stdout is first, "두 번째 호출이 핸들을 갈아치웠다"
+        finally:
+            for handle in (sys.stdout, sys.stderr):
+                if handle not in (original_out, original_err):
+                    handle.close()
+            sys.stdout, sys.stderr = original_out, original_err
+            run_day._redirected = original_flag
+            run_day.LOG_DIR = original_log
+
 @windows_only
 def test_output_redirection_writes_utf8_and_rotates():
     """The redirected log is what the run's own messages land in."""

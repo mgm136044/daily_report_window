@@ -1,13 +1,16 @@
 # Installer manifest.
 #
-# `InstallerUrl` and `InstallerSha256` are placeholders until a release exists.
-# Fill them from the tagged release asset:
-#
-#   (Get-FileHash daily-report-setup-0.1.0.exe -Algorithm SHA256).Hash
-#
 # The hash is what makes this route trustworthy without a code-signing
 # certificate: winget refuses to install a file that does not match it, so a
 # tampered download fails rather than runs.
+#
+# Both values are from the v0.1.0 release, checked by downloading it back and
+# recomputing:
+#
+#   BB96ACA3E124B55F5AA85E8A3DA6229694E0F833B7C73EAF0443FB0EE98FAA14
+#
+# Every new version needs a new copy of these three files with the version,
+# URL and hash updated. There is no way to point winget at "latest".
 
 PackageIdentifier: mgm136044.daily-report
 PackageVersion: 0.1.0
@@ -29,6 +32,6 @@ ReleaseDate: 2026-08-08
 Installers:
   - Architecture: x64
     InstallerUrl: https://github.com/mgm136044/daily_report_window/releases/download/v0.1.0/daily-report-setup-0.1.0.exe
-    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+    InstallerSha256: BB96ACA3E124B55F5AA85E8A3DA6229694E0F833B7C73EAF0443FB0EE98FAA14
 ManifestType: installer
 ManifestVersion: 1.6.0

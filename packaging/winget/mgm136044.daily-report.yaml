@@ -1,0 +1,28 @@
+# winget version manifest.
+#
+# Submitting these means opening a pull request from your GitHub account to
+# microsoft/winget-pkgs, which is public and permanent. Everything below is
+# therefore chosen to disclose nothing that the repository does not already:
+# the account name appears in the repository URL, and nothing here adds a real
+# name, an email address or a machine path. `scripts/check_no_pii.py` covers
+# these files like any other.
+#
+# Publishing, in order:
+#
+#   1. Tag a release. CI builds daily-report-setup-<version>.exe and attaches
+#      it. The signing decision has to be made first — see the workflow.
+#   2. Put the release asset URL and its SHA256 in the installer manifest.
+#   3. `winget validate --manifest packaging/winget`
+#   4. `winget install --manifest packaging/winget`   (test it locally first)
+#   5. Open the pull request against microsoft/winget-pkgs.
+#
+# Why this route rather than a signed download: SmartScreen fires on the Mark
+# of the Web, which browsers and the attachment manager apply. winget does not,
+# so an unsigned installer delivered this way does not meet the warning that
+# would otherwise make it harder to install than `git clone`.
+
+PackageIdentifier: mgm136044.daily-report
+PackageVersion: 0.1.0
+DefaultLocale: ko-KR
+ManifestType: version
+ManifestVersion: 1.6.0

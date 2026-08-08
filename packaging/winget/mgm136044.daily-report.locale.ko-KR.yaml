@@ -1,0 +1,40 @@
+# Locale manifest. Every field here is public and permanent.
+#
+# `Publisher` is the GitHub account, not a person's name. winget requires the
+# field; it does not require it to be an identity, and this one adds nothing
+# the repository URL does not already show.
+
+PackageIdentifier: mgm136044.daily-report
+PackageVersion: 0.1.0
+PackageLocale: ko-KR
+Publisher: mgm136044
+PublisherUrl: https://github.com/mgm136044
+PublisherSupportUrl: https://github.com/mgm136044/daily_report_window/issues
+PackageName: 하루 마감 보고서
+PackageUrl: https://github.com/mgm136044/daily_report_window
+License: MIT
+LicenseUrl: https://github.com/mgm136044/daily_report_window/blob/main/LICENSE
+ShortDescription: 코딩 에이전트의 세션 기록에서 하루치 업무 보고서를 만들어 Notion 에 적재합니다.
+Description: |-
+  Claude Code 와 Codex CLI 가 이미 남기고 있는 세션 기록, git 커밋, 디스크 변경에서
+  그날 실제로 한 일을 뽑아 요약하고, Notion 데이터베이스에 날짜별 한 행으로 넣습니다.
+
+  새로 추적하는 것은 없습니다. 다시 볼 일 없는 99.9% 를 버리고 남은 것으로 보고서를
+  만듭니다. 매일 04:05 에 예약 작업이 알아서 돌고, 기기가 꺼져 있던 날은 다음 실행에서
+  채웁니다.
+
+  원본 프롬프트와 명령은 기기 밖으로 나가지 않습니다. 자격증명 마스킹이 두 번 —
+  모델이 보기 전과 게시하기 전에 — 돌아갑니다.
+
+  Notion 내부 연결 토큰과 로그인된 Claude Code CLI 가 필요합니다.
+Moniker: daily-report
+Tags:
+  - notion
+  - productivity
+  - journal
+  - automation
+  - claude-code
+  - codex
+ReleaseNotesUrl: https://github.com/mgm136044/daily_report_window/releases
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

@@ -1083,15 +1083,63 @@ def test_the_installer_stays_per_user():
     assert "{localappdata}\\Programs" in script
     assert "{pf}" not in script and "{commonpf}" not in script
 
-def test_the_release_pipeline_refuses_to_ship_unsigned():
-    """An unsigned executable is not a neutral outcome — SmartScreen makes it
-    harder to install than the clone it was meant to replace. The rule belongs
-    in the pipeline, not in someone's memory."""
-    workflow = os.path.join(ROOT, ".github", "workflows", "build.yml")
-    assert os.path.exists(workflow), "빌드 워크플로가 없다"
-    body = open(workflow, encoding="utf-8").read()
-    assert "SIGNING_ENABLED" in body
-    assert "throw" in body, "서명 없이도 릴리스가 통과한다"
+def test_the_binary_scanner_actually_finds_things():
+    """A leak checker that always passes converts "we did not look" into
+    "we looked and it was fine".
+
+    The source scanner cannot see this class at all: PyInstaller keeps the
+    absolute path each module was compiled from inside the bytecode, so a
+    repository can be clean and the executable built from it still carry the
+    builder's account name to everyone who downloads it.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "check_binary", os.path.join(ROOT, "scripts", "check_binary_no_pii.py"))
+    checker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(checker)
+
+    terms = checker.local_terms([])
+    assert terms, "이 기기에서 검사할 식별자를 하나도 못 만들었다"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        account = os.environ.get("USERNAME") or os.environ.get("USER") or "nobody"
+        # the same string in two encodings, because a path can appear in either
+        # inside one binary
+        with open(os.path.join(tmp, "utf8.bin"), "wb") as handle:
+            handle.write(f"harmless {account} harmless".encode("utf-8"))
+        with open(os.path.join(tmp, "utf16.bin"), "wb") as handle:
+            handle.write(f"path {os.path.expanduser('~')} here".encode("utf-16-le"))
+        with open(os.path.join(tmp, "clean.bin"), "wb") as handle:
+            handle.write(b"nothing to see here")
+
+        assert checker.scan_file(os.path.join(tmp, "utf8.bin"), terms), "UTF-8 을 놓쳤다"
+        assert checker.scan_file(os.path.join(tmp, "utf16.bin"), terms), "UTF-16 을 놓쳤다"
+        assert not checker.scan_file(os.path.join(tmp, "clean.bin"), terms), "오탐"
+
+    # and it must not echo what it found — that is a second copy of the leak
+    assert checker.mask("mysecretvalue") != "mysecretvalue"
+    assert "secret" not in checker.mask("mysecretvalue")
+
+def test_ci_scans_the_built_artifacts_not_just_the_source():
+    workflow = open(os.path.join(ROOT, ".github", "workflows", "build.yml"),
+                    encoding="utf-8").read()
+    assert workflow.count("check_binary_no_pii.py") >= 2, \
+        "번들과 설치기 양쪽을 검사해야 한다"
+
+def test_the_release_pipeline_makes_signing_an_explicit_decision():
+    """Not a wall — a decision that has to be made on purpose.
+
+    Refusing outright was too strong. SmartScreen fires on the Mark of the Web,
+    which browsers and the attachment manager apply and `winget`, `git clone`
+    and curl do not; a release distributed through winget largely does not meet
+    it. Shipping unsigned is legitimate. What must not happen is shipping
+    unsigned by *forgetting*, so both answers are named and neither is default.
+    """
+    body = open(os.path.join(ROOT, ".github", "workflows", "build.yml"),
+                encoding="utf-8").read()
+    assert "SIGNING_ENABLED" in body, "서명 경로가 없다"
+    assert "ALLOW_UNSIGNED_RELEASE" in body, "미서명을 의식적으로 고를 방법이 없다"
+    assert "throw" in body, "아무것도 안 정해도 릴리스가 나간다"
 
 def test_the_dispatcher_does_not_shadow_a_date_argument():
     """`run_day` reads sys.argv directly and decides at import time whether to

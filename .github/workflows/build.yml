@@ -130,6 +130,20 @@ jobs:
           # build fails for the one reason this step is not testing.
           exit 0
 
+      # A clean repository does not mean a clean binary.
+      #
+      # PyInstaller keeps the absolute path each module was compiled from
+      # inside the bytecode, the bootloader records the build directory, and
+      # anything the build touched can end up embedded. Built on a personal
+      # machine, that is the builder's account name shipped to everyone who
+      # downloads it — and the source scan cannot see it, because the source is
+      # not where it appears.
+      #
+      # On a runner the account is "runneradmin", so this is mostly proving the
+      # check works; it earns its keep when someone builds a release locally.
+      - name: Scan the frozen build for build-machine identifiers
+        run: python -X utf8 scripts/check_binary_no_pii.py dist/daily-report
+
       # Inno Setup is preinstalled on the windows runner images.
       - name: Build the installer
         shell: pwsh
@@ -154,6 +168,9 @@ jobs:
             "SHA256 $((Get-FileHash $_.FullName -Algorithm SHA256).Hash)"
           }
 
+      - name: Scan the installer too
+        run: python -X utf8 scripts/check_binary_no_pii.py dist/daily-report-setup-0.1.0.exe
+
       - uses: actions/upload-artifact@v4
         with:
           name: daily-report-unsigned
@@ -172,26 +189,48 @@ jobs:
       # 5.1 would decode this file's Korean in the ANSI codepage and fail with
       # a ParserError — meaning the release gate would block for the wrong
       # reason and say nothing about signing.
-      - name: Refuse to release without a signing identity
+      # A decision, not a wall.
+      #
+      # The earlier version refused outright, on the reasoning that SmartScreen
+      # blocks unsigned installers. That was too strong: SmartScreen fires on
+      # the Mark of the Web, which is applied by browsers and the attachment
+      # manager — not by `winget`, not by `git clone`, not by curl. A release
+      # distributed through winget largely does not meet it.
+      #
+      # So shipping unsigned is a legitimate choice. It just has to be an
+      # explicit one, which is what the variable below makes it: nobody
+      # publishes unsigned by forgetting.
+      - name: Confirm the signing decision
         shell: pwsh
         run: |
-          if (-not "${{ secrets.SIGNING_ENABLED }}") {
-            throw @"
-          서명 자격이 설정되지 않아 릴리스를 중단합니다.
-
-          서명 없는 exe 는 SmartScreen 에서 '이 앱이 PC 를 보호했습니다' 로 막히고,
-          대부분의 사용자가 거기서 이탈합니다. 그건 설치가 쉬워진 게 아니라
-          어려워진 것이므로, 지금은 git clone + install.ps1 이 더 나은 배포 경로입니다.
-
-          Azure Trusted Signing (월 \$9.99) 또는 OV 코드 서명 인증서를 마련한 뒤
-          저장소 시크릿에 SIGNING_ENABLED 를 설정하고 아래 서명 단계를 채우세요.
-          "@
+          $signed = "${{ secrets.SIGNING_ENABLED }}"
+          $unsigned = "${{ vars.ALLOW_UNSIGNED_RELEASE }}"
+          if ($signed) { "서명된 릴리스로 진행합니다"; exit 0 }
+          if ($unsigned -eq 'true') {
+            "미서명 릴리스로 진행합니다 (ALLOW_UNSIGNED_RELEASE=true)"
+            "  브라우저로 직접 받으면 SmartScreen 경고가 뜹니다."
+            "  winget 이나 git clone 경로에서는 뜨지 않습니다."
+            exit 0
           }
+          throw @"
+          서명 여부가 정해지지 않아 릴리스를 중단합니다.
+
+          둘 중 하나를 고르세요.
+            - 서명한다      : 저장소 시크릿 SIGNING_ENABLED 를 설정하고 아래 서명 단계를 채운다
+            - 서명하지 않는다: 저장소 변수 ALLOW_UNSIGNED_RELEASE 를 true 로 둔다
+
+          미서명이 곧 실패는 아닙니다. SmartScreen 은 Mark of the Web 에 반응하고,
+          그건 브라우저와 첨부파일 관리자가 붙입니다 — winget 과 git clone 은 붙이지 않습니다.
+          브라우저 다운로드를 주 배포 경로로 삼을 때만 서명이 사실상 필수입니다.
+          "@
 
       # - name: Sign
       #   Fill in once a certificate exists. Azure Trusted Signing:
       #     azure/trusted-signing-action@v0
       #   or signtool with a PFX from a secret.
 
-      - name: Package and publish
-        run: echo "서명 단계가 채워진 뒤에 활성화됩니다"
+      - name: Publish the release
+        shell: pwsh
+        run: |
+          Write-Host "여기서 dist\*.exe 를 릴리스 자산으로 올립니다."
+          Write-Host "winget 매니페스트의 InstallerUrl 이 이 자산을 가리킵니다."

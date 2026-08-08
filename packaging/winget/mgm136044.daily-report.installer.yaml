@@ -1,0 +1,34 @@
+# Installer manifest.
+#
+# `InstallerUrl` and `InstallerSha256` are placeholders until a release exists.
+# Fill them from the tagged release asset:
+#
+#   (Get-FileHash daily-report-setup-0.1.0.exe -Algorithm SHA256).Hash
+#
+# The hash is what makes this route trustworthy without a code-signing
+# certificate: winget refuses to install a file that does not match it, so a
+# tampered download fails rather than runs.
+
+PackageIdentifier: mgm136044.daily-report
+PackageVersion: 0.1.0
+InstallerType: inno
+Scope: user
+InstallModes:
+  - interactive
+  - silent
+  - silentWithProgress
+InstallerSwitches:
+  Silent: /VERYSILENT /NORESTART
+  SilentWithProgress: /SILENT /NORESTART
+  # The uninstaller runs `daily-report.exe uninstall` first, which removes the
+  # scheduled task. Without that the task survives the program and fails to
+  # start every night, forever.
+  Custom: /NORESTART
+UpgradeBehavior: install
+ReleaseDate: 2026-08-08
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/mgm136044/daily_report_window/releases/download/v0.1.0/daily-report-setup-0.1.0.exe
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+ManifestType: installer
+ManifestVersion: 1.6.0

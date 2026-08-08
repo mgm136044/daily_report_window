@@ -70,6 +70,111 @@ def test_ordinary_korean_prose_is_untouched():
     assert not found
 
 
+# --- 프라이버시 검토에서 나온 결함 ------------------------------------------
+
+
+def test_the_marker_is_not_redacted_a_second_time():
+    """The sanitizer was destroying its own output.
+
+    `_mask` wrote `<REDACTED:gitlab_token:glpat-…len26>`, and `key_assignment`
+    — which runs later and matches a bare `TOKEN` followed by `:` — then
+    matched that marker: the result was `<REDACTED=<REDACTED>`. Most rule names
+    contain `token` or `key`, so this hit roughly half of them, and what it
+    removed was exactly the kind and length that make a finding diagnosable.
+    """
+    for text in ["glpat-abcdefghijklmnopqrst",
+                 "ntn_abcdefghijklmnopqrstuvwx",
+                 "ghp_abcdefghijklmnopqrstuvwx",
+                 "Bearer abcdefghijklmnopqrstuvwxyz",
+                 "AIza" + "B" * 35]:   # the rule's exact length, so len matches
+        cleaned, found = sanitize.redact(text)
+        assert found, f"미탐지: {text}"
+        assert cleaned.count("<REDACTED") == 1, f"마커가 다시 살균됨: {cleaned}"
+        kind = next(iter(found))
+        assert kind in cleaned, f"종류가 지워짐: {cleaned}"
+        assert f"len{len(text)}" in cleaned, f"길이가 지워짐: {cleaned}"
+
+
+def test_identity_matches_keep_no_recognisable_head():
+    """The head that makes a credential finding actionable is, for an identity,
+    the disclosure itself — a resident registration number's first six digits
+    are the holder's date of birth, and they survived masking."""
+    cleaned, _ = sanitize.redact("901231-1234567")
+    assert "901231" not in cleaned, f"생년월일이 남음: {cleaned}"
+    assert "len14" in cleaned, "무엇이 지워졌는지도 알 수 없으면 진단이 안 된다"
+
+    cleaned, _ = sanitize.redact("010-1234-5678")
+    assert "010-12" not in cleaned, f"번호 앞자리가 남음: {cleaned}"
+
+    cleaned, _ = sanitize.redact("someone.private@example2.co.kr")
+    assert "someon" not in cleaned, f"주소 앞부분이 남음: {cleaned}"
+
+    # a credential still keeps its head, which is how you tell which key leaked
+    cleaned, _ = sanitize.redact("glpat-abcdefghijklmnopqrst")
+    assert "glpat-" in cleaned
+
+
+def test_encryption_prose_is_not_treated_as_a_password():
+    """`암호` is a prefix of ordinary words. `암호화(AES-256)` was rewritten to
+    `암호화(AES-256)=<REDACTED>`, so a sentence about encryption came back from
+    the sanitizer damaged."""
+    for text in ["암호화(AES-256) 를 적용했다",
+                 "암호화폐 시세를 2026년에 확인",
+                 "암호화된 백업을 만들었다",
+                 "암호화 알고리즘은 AES 를 쓴다"]:
+        cleaned, found = sanitize.redact(text)
+        assert cleaned == text, f"정상 문장이 훼손됨: {cleaned}"
+        assert not found, f"오탐: {text} → {dict(found)}"
+
+
+def test_real_korean_passwords_are_still_caught():
+    """The fix above must not be a way of switching the rule off."""
+    for text in ["암호는 P@ssw0rd1 이다", "암호: abc123def", "암호 P@ssw0rd1",
+                 "비밀번호는 Hunter2Hunter2", "비번 abc123def"]:
+        cleaned, found = sanitize.redact(text)
+        assert found, f"미탐지: {text}"
+        assert "P@ssw0rd1" not in cleaned and "abc123def" not in cleaned
+        assert "Hunter2Hunter2" not in cleaned
+
+
+def test_modern_token_and_webhook_shapes_are_covered():
+    """A fine-grained PAT is what GitHub issues by default now, and the classic
+    rule cannot see one: `github_pat_` does not begin with `gh` + [pousr]. A
+    webhook URL has no prefix to recognise at all — the URL is the credential.
+    """
+    # The webhook samples are assembled rather than written out. They are
+    # synthetic — all zeroes and X's, addressing nothing — but GitHub's push
+    # protection matches the *shape*, and it blocked this commit. The choices
+    # were to split the literal or to allow-list a secret-shaped string in a
+    # public repository forever, and the second is a habit worth not having.
+    slack_host = "https://hooks." + "slack.com/services"
+    discord_host = "https://discord" + ".com/api/webhooks"
+    samples = {
+        "github_fine_grained_pat":
+            "github_pat_" + "11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz012345",
+        "slack_webhook": f"{slack_host}/T00000000/B00000000/{'X' * 24}",
+        "discord_webhook": f"{discord_host}/123456789012345678/{'a' * 26}",
+        "email": "someone.private@example2.co.kr",
+    }
+    for kind, text in samples.items():
+        cleaned, found = sanitize.redact(text)
+        assert kind in found, f"{kind} 미탐지: {text}"
+        assert text not in cleaned
+
+
+def test_package_specifiers_are_not_mistaken_for_addresses():
+    """`@[\\w-]+\\.[\\w.]{2,}` is the obvious way to write an email and it also
+    matches `react@18.2.0`. Package specifiers are among the most common things
+    in a collected shell command, so the report would come back with its own
+    install lines redacted. The top-level domain has to be alphabetic."""
+    for text in ["npm install react@18.2.0 vite@5.0.11",
+                 "pip install ruff@0.4.2",
+                 "npx @vitest/coverage-v8@2.1.9"]:
+        cleaned, found = sanitize.redact(text)
+        assert cleaned == text, f"명령이 훼손됨: {cleaned}"
+        assert not found, f"오탐: {text} → {dict(found)}"
+
+
 def test_dict_keys_are_redacted_too():
     """Project names are dict keys and become Notion properties."""
     payload = {"ntn_abcdefghijklmnopqrstuvwx": {"note": "ok"}}

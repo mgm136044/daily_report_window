@@ -253,8 +253,13 @@ Session logs contain credentials. Scanning a month of real prompts and shell
 commands here turned up live API tokens in plain text; anyone who has pasted a
 token into a command has one too.
 
-- Raw prompts and commands **never leave the machine**. Only the model's prose
-  is published.
+- **The digest is sent to the Anthropic API to be summarised.** `claude -p`
+  writes the report, so the whole sanitised digest — prompts, shell commands and
+  file paths — reaches the model through the Claude Code CLI. The only thing
+  that never leaves the machine is what `exclude.paths` kept from being
+  collected in the first place.
+- **Only the model's prose is published to Notion**, never the raw prompts and
+  commands.
 - Sanitisation runs twice: on the digest before the model sees it, and on the
   finished report before it is written to Notion.
 - `exclude.paths` blocks collection entirely, which is stronger than redaction.

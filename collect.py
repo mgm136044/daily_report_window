@@ -176,13 +176,30 @@ def collect_sessions(date_str: str) -> dict:
     }
 
 
+def _record_file(bucket: dict, key: str, raw: str) -> None:
+    """Record a file the session touched, unless it lives in an excluded tree.
+
+    `exclude.paths` was only ever consulted about a session's *working
+    directory*. A session started in an ordinary project that then writes into
+    an excluded one — a note into a confidential folder, a draft into a client
+    directory — put that filename in the report anyway, and the README sells
+    that setting as the strong control, stronger than redaction.
+
+    Excluding a directory has to mean its contents do not appear. Being the
+    session's cwd is only one of the ways a path gets in.
+    """
+    path = config.nfc(raw)
+    if path and not config.is_excluded(path):
+        bucket[key].add(path)
+
+
 def _absorb_tool_use(bucket: dict, block: dict) -> None:
     name = block.get("name")
     payload = block.get("input") or {}
     if name in FILE_TOOLS and payload.get("file_path"):
-        bucket["writes"].add(config.nfc(payload["file_path"]))
+        _record_file(bucket, "writes", payload["file_path"])
     elif name in EDIT_TOOLS and payload.get("file_path"):
-        bucket["edits"].add(config.nfc(payload["file_path"]))
+        _record_file(bucket, "edits", payload["file_path"])
     elif name == "Bash" and payload.get("command"):
         bucket["bash"].append(payload["command"])
     elif name == "TodoWrite":

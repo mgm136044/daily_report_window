@@ -52,6 +52,45 @@ has_runtime_shell = pytest.mark.skipif(
     reason=f"{platform_support.PLATFORM.name} 에는 런타임 셸(잠금·워치독)이 없다")
 
 
+def console_text(raw: bytes) -> str:
+    """Decode a child process's stdout without trusting the ambient codepage.
+
+    Windows PowerShell 5.1 writes its output in the *console's* codepage —
+    cp949 on the Korean install this tool is written for. Decoding that as
+    UTF-8 compared every Korean assertion against mojibake ("작업 이름: "
+    against "�۾� �̸�: "), so the suite failed for exactly the audience it
+    was written for, and only when launched from a shell that had not been
+    switched to 65001 first. Under CI, under pwsh and under a UTF-8 console it
+    passed, which is why it survived: the bug was in the test's decoding, not
+    in anything the installer does.
+
+    `locale.getpreferredencoding(False)` is not the answer here — this suite
+    runs under `-X utf8`, where it reports "utf-8" whatever the console is set
+    to, which is the very case that was already broken. The codepage is
+    therefore asked of the console itself, and of the ANSI codepage when there
+    is no console (what .NET falls back to in the same situation).
+
+    UTF-8 is tried first and *strictly*, because the child is not always
+    PowerShell 5.1: pwsh and `python -X utf8` emit UTF-8 no matter what the
+    console says. Korean cp949 cannot be mistaken for it — 가 is 0xB0 0xA1,
+    a continuation byte in leading position, so the guess fails on the first
+    character rather than somewhere in the middle.
+    """
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    if WINDOWS:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        codepage = kernel32.GetConsoleOutputCP() or kernel32.GetACP()
+        try:
+            return raw.decode(f"cp{codepage}")
+        except (LookupError, UnicodeDecodeError):
+            pass
+    return raw.decode("utf-8", errors="replace")
+
+
 # --- sanitizer -------------------------------------------------------------
 
 def test_container_directory_with_marker_is_still_a_project(configured, home):
@@ -1227,7 +1266,7 @@ def test_every_powershell_block_in_the_workflow_parses():
          os.path.join(ROOT, "scripts", "check_workflow_powershell.py"),
          os.path.join(ROOT, ".github", "workflows", "build.yml")],
         capture_output=True, timeout=300)
-    output = result.stdout.decode("utf-8", errors="replace")
+    output = console_text(result.stdout)
     assert result.returncode == 0, f"워크플로 PowerShell 파싱 실패:\n{output}"
     assert "OK" in output and "검사한 블록이 없습니다" not in output
 
@@ -1701,7 +1740,7 @@ def test_installer_parses_under_windows_powershell():
     )
     result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
                             capture_output=True, timeout=120)
-    out = result.stdout.decode("utf-8", errors="replace").strip()
+    out = console_text(result.stdout).strip()
     assert out.endswith("OK"), f"install.ps1 파싱 실패: {out}"
 
 @windows_only
@@ -1870,7 +1909,7 @@ def test_the_installer_produces_a_config_that_parses():
              "-Language", "ko", "-Authors", "me@example.com",
              "-SearchRoot", sandbox, "-NonInteractive"],
             capture_output=True, timeout=300)
-        output = result.stdout.decode("utf-8", errors="replace")
+        output = console_text(result.stdout)
 
         generated = os.path.join(sandbox, "config.toml")
         assert os.path.exists(generated), f"config.toml 이 생성되지 않았다:\n{output}"
@@ -1981,6 +2020,7 @@ def test_the_installers_intermediate_state_counts_as_unconfigured():
             else:
                 os.environ["DAILY_REPORT_HOME"] = original
 
+@has_runtime_shell
 def test_log_redirection_happens_when_run_day_is_imported_not_only_run():
     """The packaged build imports this module; it does not execute it.
 
@@ -1990,7 +2030,15 @@ def test_log_redirection_happens_when_run_day_is_imported_not_only_run():
     console under pythonw, and an empty logs/ — the failure this project is
     organised against, reached through the thing meant to prevent it.
 
-    Exercised through `main()`, which is the path the dispatcher takes.
+    Exercised through `main()`, which is the path the dispatcher takes — and
+    that is why it carries the marker. `main()` opens with
+    `require_supported()`, so on Linux it raises before reaching the redirect
+    and the test failed there for the one reason it is not about. It went in
+    unmarked and turned CI red from v0.1.2 on; both tagged releases since have
+    failed in the `test` job, which is why the last published release is
+    v0.1.1. The portable half of this behaviour is covered by
+    `test_redirecting_twice_does_not_lose_the_first_handles`, which drives
+    `redirect_output()` directly and still runs everywhere.
     """
     original_argv, original_home = sys.argv[:], os.environ.get("DAILY_REPORT_HOME")
     original_out, original_err = sys.stdout, sys.stderr
@@ -2314,3 +2362,144 @@ def test_expected_author_is_exempt_but_others_are_not():
         assert chk.scan_commits(tmp, detectors), "면제 없이도 조용하면 검사가 죽은 것이다"
         assert chk.scan_commits(tmp, detectors, expect_author="someone <else@example.com>"), \
             "다른 신원까지 면제됐다"
+
+
+# --- 공개 문서의 프라이버시 주장 --------------------------------------------
+
+PUBLIC_PRIVACY_DOCS = ("README.md", "README.ko.md",
+                       os.path.join("packaging", "winget",
+                                    "mgm136044.daily-report.locale.ko-KR.yaml"))
+
+def test_public_docs_disclose_that_the_digest_reaches_the_api():
+    """The report is written by `claude -p`, which is a network API client.
+
+    `build_prompt` embeds the entire digest — prompts, shell commands and file
+    paths — in what it sends, so that material does leave the machine.
+    `docs/design.md` stated the true version ("only the model's prose reaches
+    the destination"); the READMEs and the store listing generalised it into
+    "raw prompts never leave the machine".
+
+    That is the one sentence a privacy-sensitive reader would actually act on,
+    and it was wrong. A promise that cannot be kept is worse than no promise,
+    so each public document has to name the transmission.
+    """
+    import re as _re
+    for name in PUBLIC_PRIVACY_DOCS:
+        body = open(os.path.join(ROOT, name), encoding="utf-8").read()
+        # whitespace-collapsed, because in a YAML block scalar the line breaks
+        # are the author's wrapping and nothing else — the phrase straddled one
+        flat = _re.sub(r"\s+", " ", body)
+        assert "Anthropic API" in flat, f"{name}: 전송 사실을 밝히지 않는다"
+
+def test_the_retracted_claim_does_not_come_back():
+    """Named literally, because the correction reads similarly to the error.
+
+    Both texts now contain "never leaves the machine" — the accurate one is
+    about what `exclude.paths` prevented from being collected. A substring test
+    would fail on the fix, so the retracted sentences are pinned instead.
+    """
+    retracted = ("Raw prompts and commands **never leave the machine**",
+                 "원본 프롬프트와 명령은 **기기 밖으로 나가지 않는다.**",
+                 "원본 프롬프트와 명령은 기기 밖으로 나가지 않습니다")
+    for name in PUBLIC_PRIVACY_DOCS:
+        body = open(os.path.join(ROOT, name), encoding="utf-8").read()
+        for claim in retracted:
+            assert claim not in body, f"{name}: 철회된 주장이 돌아왔다 — {claim!r}"
+
+def test_the_summarizer_really_does_send_the_digest():
+    """The premise of the two tests above, checked rather than assumed.
+
+    If summarisation ever became local, the disclosure would be the misleading
+    sentence and this test is what would say so.
+    """
+    source = open(os.path.join(ROOT, "summarize.py"), encoding="utf-8").read()
+    assert "digest=json.dumps(digest" in source, "digest 가 프롬프트에 실리지 않는다"
+    assert "claude_argv()" in source and "subprocess" in source
+
+
+def _exclude(path):
+    """Add `path` to exclude.paths for the rest of the test."""
+    cfg = config.load()
+    cfg["exclude"]["paths"] = list(cfg["exclude"]["paths"]) + [str(path)]
+
+
+def test_files_written_into_an_excluded_tree_are_not_reported(
+        configured, home, tmp_path, project):
+    """`exclude.paths` was only ever consulted about a session's *cwd*.
+
+    A session running in an ordinary project that writes into an excluded one —
+    a note into a confidential folder — put that filename in the report anyway.
+    The README sells this setting as the control that is stronger than
+    redaction ("수집 자체를 막는다"), and for everything except the directory the
+    session happened to start in, it was not.
+    """
+    configured()
+    secret = home / "confidential" / "client-work"
+    secret.mkdir(parents=True)
+
+    stamp = "2026-08-04T10:00:00.000Z"
+    transcript = tmp_path / "claude" / "projects" / "encoded" / "session.jsonl"
+    transcript.parent.mkdir(parents=True, exist_ok=True)
+    records = [
+        {"type": "user", "timestamp": stamp, "cwd": str(project),
+         "sessionId": "s1", "message": {"role": "user", "content": "정리해줘"}},
+        {"type": "assistant", "timestamp": stamp, "cwd": str(project),
+         "sessionId": "s1", "message": {"role": "assistant", "content": [
+             {"type": "tool_use", "name": "Write",
+              "input": {"file_path": str(project / "parser.py")}},
+             {"type": "tool_use", "name": "Write",
+              "input": {"file_path": str(secret / "요금협상.md")}},
+             {"type": "tool_use", "name": "Edit",
+              "input": {"file_path": str(secret / "메모.md")}},
+         ]}},
+    ]
+    with open(transcript, "w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    # Control first, with the directory *not* excluded. Without this the test
+    # could pass because the pipeline never carried those names in the first
+    # place — which is how a check ends up incapable of failing.
+    before = json.dumps(collect.collect_sessions("2026-08-04"), ensure_ascii=False)
+    assert "요금협상" in before, "합성 전제 실패 — 제외 없이도 이름이 안 실린다"
+
+    _exclude(secret)
+    after = json.dumps(collect.collect_sessions("2026-08-04"), ensure_ascii=False)
+    assert "parser.py" in after, "제외가 정상 파일까지 지웠다"
+    for leaked in ("요금협상", "메모.md", "client-work"):
+        assert leaked not in after, f"제외된 트리의 이름이 보고서로 샌다: {leaked}"
+
+
+def test_codex_patches_into_an_excluded_tree_are_not_reported(
+        configured, home, tmp_path, project):
+    """The same rule on the other collector. Codex records a patch by absolute
+    path, so it reaches the report by a different route than Claude Code's
+    tool calls and needed the check separately."""
+    configured()
+    secret = home / "confidential" / "client-work"
+    secret.mkdir(parents=True)
+
+    stamp = "2026-08-04T11:00:00.000Z"
+    rollout = tmp_path / "codex" / "2026" / "08" / "04" / "rollout-x.jsonl"
+    rollout.parent.mkdir(parents=True, exist_ok=True)
+    records = [
+        {"type": "session_meta", "timestamp": stamp,
+         "payload": {"cwd": str(project), "id": "r1", "source": "cli"}},
+        {"type": "response_item", "timestamp": stamp,
+         "payload": {"type": "patch_apply_end", "success": True, "changes": {
+             str(project / "design.md"): {"type": "update"},
+             str(secret / "단가표.md"): {"type": "add"},
+         }}},
+    ]
+    with open(rollout, "w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    before = json.dumps(collect_codex.collect("2026-08-04"), ensure_ascii=False)
+    assert "단가표" in before, "합성 전제 실패 — 제외 없이도 이름이 안 실린다"
+
+    _exclude(secret)
+    after = json.dumps(collect_codex.collect("2026-08-04"), ensure_ascii=False)
+    assert "design.md" in after, "제외가 정상 파일까지 지웠다"
+    for leaked in ("단가표", "client-work"):
+        assert leaked not in after, f"제외된 트리의 이름이 보고서로 샌다: {leaked}"

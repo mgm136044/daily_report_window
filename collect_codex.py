@@ -271,7 +271,12 @@ def _absorb(bucket: dict, meta: dict, pending: list[tuple], prompt_cap: int) -> 
             for path, change in (payload.get("changes") or {}).items():
                 kind = (change or {}).get("type", "update") if isinstance(change, dict) else "update"
                 target = {"add": "files_added", "delete": "files_deleted"}.get(kind, "files_updated")
-                bucket[target].add(config.nfc(path))
+                # the same rule as collect._record_file: a session in an
+                # included directory that patches a file in an excluded one
+                # must not put that filename in the report
+                clean = config.nfc(path)
+                if clean and not config.is_excluded(clean):
+                    bucket[target].add(clean)
 
         elif ptype in ("custom_tool_call", "function_call"):
             bucket["plans"] += extract_plan_steps(payload)

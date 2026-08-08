@@ -31,8 +31,19 @@ PATTERNS: list[tuple[str, re.Pattern]] = [
     ("anthropic_key", re.compile(r"sk-ant-[A-Za-z0-9_\-]{10,}")),
     ("notion_token", re.compile(r"\b(?:ntn_[A-Za-z0-9]{20,}|secret_[A-Za-z0-9]{30,})")),
     ("github_token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}")),
+    # Fine-grained PATs are the default GitHub now offers, and the classic rule
+    # above cannot see them: `github_pat_` does not start with `gh` + [pousr].
+    ("github_fine_grained_pat", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,}")),
     ("gitlab_token", re.compile(r"\bglpat-[A-Za-z0-9_\-]{15,}")),
     ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{10,}")),
+    # A webhook URL is a bearer credential with no token prefix to recognise it
+    # by — the whole URL is the secret, and anyone holding it can post as the
+    # integration. They travel in shell commands more often than tokens do,
+    # because `curl -d ... <url>` is how people test them.
+    ("slack_webhook", re.compile(
+        r"https://hooks\.slack\.com/(?:services|workflows)/[A-Za-z0-9_/+\-]{20,}")),
+    ("discord_webhook", re.compile(
+        r"https://(?:[a-z]+\.)?discord(?:app)?\.com/api/webhooks/\d+/[\w\-]{20,}")),
     ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}")),
     ("aws_access_key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}")),
     ("stripe_key", re.compile(r"\bsk_(?:live|test)_[A-Za-z0-9]{16,}")),
@@ -49,6 +60,15 @@ PATTERNS: list[tuple[str, re.Pattern]] = [
     ("bearer_token", re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{20,}")),
     ("krn_rrn", re.compile(r"\b\d{6}-[1-4]\d{6}\b")),
     ("krn_phone", re.compile(r"\b01[016789]-\d{3,4}-\d{4}\b")),
+    # The top-level domain has to be alphabetic. Written the obvious way,
+    # `@[\w-]+\.[\w.]{2,}`, it also matches a package specifier —
+    #   react@18.2.0    # pii-allow: 주소가 아니라 패키지 지정자 예시
+    # — and those are among the most common things in a collected shell
+    # command, so the report would come back with its own install lines
+    # redacted. `check_no_pii.py` still carries the loose form and flags the
+    # example above, which is the demonstration and the reason for the marker.
+    ("email", re.compile(
+        r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}\b")),
     # prefixed or bare secret-ish variable names, `=` or `:` separated
     ("key_assignment", re.compile(
         r"(?i)(?:^|[^A-Za-z0-9_])"
@@ -58,10 +78,24 @@ PATTERNS: list[tuple[str, re.Pattern]] = [
         r"\s*[=:]\s*[\"']?([^\s\"'&;,)]{8,})")),
     # Korean prose form. Requires the value to look like a secret (contains a
     # digit or symbol and no spaces) so ordinary sentences are not damaged.
+    #
+    # `암호` is split out from the others because it is a prefix of ordinary
+    # words — 암호화, 암호화폐 — where the rest of the compound then reads as
+    # the value. `암호화(AES-256)` was rewritten to `암호화(AES-256)=<REDACTED>`,
+    # so a sentence about encryption came out of the sanitizer damaged. The
+    # bare stem therefore needs a particle, a separator or a space after it;
+    # the unambiguous words do not, because nothing is built on top of them.
     ("korean_secret", re.compile(
-        r"(?:비밀번호|패스워드|비번|암호)\s*(?:는|은|가|이|:|=)?\s*"
+        r"(?:(?:비밀번호|패스워드|비번)\s*(?:는|은|가|이|:|=)?\s*"
+        r"|암호\s*(?:는|은|가|이|:|=)\s*|암호\s+)"
         r"[\"']?((?=[^\s\"']*[0-9!@#$%^&*])[^\s\"']{6,})")),
 ]
+
+# Kinds whose leading characters are the sensitive part rather than a label for
+# it. A resident registration number's first six digits are the holder's date
+# of birth, so the head that makes a credential finding actionable is, for
+# these, the disclosure itself.
+IDENTITY_KINDS = frozenset({"krn_rrn", "krn_phone", "email"})
 
 
 def _mask(kind: str, matched: str) -> str:
@@ -71,14 +105,22 @@ def _mask(kind: str, matched: str) -> str:
     unconditionally leaked the head of the value whenever the separator was
     `:` and the value itself contained an `=`, e.g. `PASSWORD: abc=defghijk`
     kept `abc`.
+
+    The marker separates its fields with spaces rather than colons, because
+    `key_assignment` runs later in the list and matches a bare `TOKEN` — so it
+    matched the marker this function had just produced. `glpat-…` came out as
+    `<REDACTED=<REDACTED>`: the sanitizer's own second pass destroyed the kind
+    and length that make a finding diagnosable, on roughly half the rules,
+    since most of their names contain `token` or `key`.
     """
     if kind in ("key_assignment", "korean_secret"):
         cut = min((i for i in (matched.find("="), matched.find(":")) if i >= 0),
                   default=-1)
         name = matched[:cut] if cut >= 0 else matched.split()[0]
         return f"{name.strip()}=<REDACTED>"
-    head = matched[:6]
-    return f"<REDACTED:{kind}:{head}…len{len(matched)}>"
+    if kind in IDENTITY_KINDS:
+        return f"<REDACTED {kind} len{len(matched)}>"
+    return f"<REDACTED {kind} {matched[:6]}… len{len(matched)}>"
 
 
 def redact(text: str) -> tuple[str, Counter]:

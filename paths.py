@@ -63,3 +63,21 @@ def resource(*parts: str) -> str:
 
 def data(*parts: str) -> str:
     return os.path.join(data_root(), *parts)
+
+
+def ensure_data_root() -> str:
+    """Create the data directory, and return it.
+
+    Running from a checkout the data root is the source directory, which
+    obviously exists — so nothing needed this and nothing noticed it was
+    missing. A packaged install writes to `%LOCALAPPDATA%\\daily-report`, which
+    does not exist until something makes it, and the first thing to write there
+    is the setup wizard's `.env`:
+
+        .env 를 쓰지 못했습니다: [Errno 2] No such file or directory
+
+    Anything that writes into the data root calls this first.
+    """
+    root = data_root()
+    os.makedirs(root, exist_ok=True)
+    return root

@@ -53,6 +53,7 @@ def redirect_output() -> None:
     Also rotates, which launchd never needed: on macOS a log this job appends
     to forever is at least visible in Console. Here nothing else would trim it.
     """
+    paths.ensure_data_root()
     os.makedirs(LOG_DIR, exist_ok=True)
     for name, attribute in (("stdout.log", "stdout"), ("stderr.log", "stderr")):
         path = os.path.join(LOG_DIR, name)

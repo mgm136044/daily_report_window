@@ -1616,6 +1616,56 @@ def test_wizard_hands_values_to_the_installer_rather_than_reimplementing_it():
     for name in ("$Language", "$Authors", "$SearchRoot", "$NonInteractive"):
         assert name in header, f"install.ps1 이 {name} 를 받지 않는다"
 
+def test_writing_works_when_the_data_root_does_not_exist_yet():
+    """The first release failed here, on the first thing a user did with it.
+
+        .env 를 쓰지 못했습니다: [Errno 2] No such file or directory:
+        'C:\\Users\\...\\AppData\\Local\\daily-report\\.env'
+
+    Running from a checkout the data root is the source directory, so nothing
+    ever needed creating and nothing noticed. A packaged install writes to
+    %LOCALAPPDATA%\\daily-report, which does not exist until something makes
+    it — and the first writer is the setup wizard.
+
+    The sandbox test that was supposed to cover this created the directory
+    first, which is exactly the thing under test. It must not.
+    """
+    import paths
+    import setup_gui
+
+    original_env, original_example = setup_gui.ENV_PATH, setup_gui.EXAMPLE_ENV
+    original_home = os.environ.get("DAILY_REPORT_HOME")
+    with tempfile.TemporaryDirectory() as tmp:
+        # deliberately not created
+        missing = os.path.join(tmp, "does-not-exist-yet", "daily-report")
+        assert not os.path.exists(missing)
+        try:
+            os.environ["DAILY_REPORT_HOME"] = missing
+            assert paths.ensure_data_root() == os.path.abspath(missing)
+            assert os.path.isdir(missing)
+
+            setup_gui.ENV_PATH = os.path.join(missing, "deeper", ".env")
+            setup_gui.EXAMPLE_ENV = os.path.join(tmp, ".env.example")
+            with open(setup_gui.EXAMPLE_ENV, "w", encoding="utf-8") as handle:
+                handle.write("DAILY_REPORT_NOTION_TOKEN=\n"
+                             "DAILY_REPORT_PARENT_PAGE_URL=\n")
+            setup_gui.write_env("ntn_TEST", "https://notion.so/parent")
+            assert os.path.exists(setup_gui.ENV_PATH)
+        finally:
+            setup_gui.ENV_PATH, setup_gui.EXAMPLE_ENV = original_env, original_example
+            if original_home is None:
+                os.environ.pop("DAILY_REPORT_HOME", None)
+            else:
+                os.environ["DAILY_REPORT_HOME"] = original_home
+
+@windows_only
+def test_the_installer_creates_its_data_directory():
+    """install.ps1 writes config.toml before anything else makes the folder."""
+    body = open(os.path.join(ROOT, "install.ps1"), encoding="utf-8-sig").read()
+    head = body[:body.index("$ConfigPath = Join-Path")]
+    assert "New-Item -ItemType Directory -Force -Path $DataDir" in head, \
+        "config.toml 을 쓰기 전에 데이터 디렉터리를 만들지 않는다"
+
 @windows_only
 def test_wizard_writes_env_without_a_bom_and_keeps_the_other_keys():
     """A leading \\ufeff corrupts the first key name for everything that reads

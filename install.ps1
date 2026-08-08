@@ -56,6 +56,10 @@ param(
 
 $Frozen = -not [string]::IsNullOrWhiteSpace($AppExe)
 if (-not $DataDir) { $DataDir = $PSScriptRoot }
+# Before anything writes into it. A source checkout's data root is the script's
+# own directory and obviously exists; a packaged install's is
+# %LOCALAPPDATA%\daily-report, which nothing has created yet at this point.
+if (-not (Test-Path $DataDir)) { New-Item -ItemType Directory -Force -Path $DataDir | Out-Null }
 $ConfigPath = Join-Path $DataDir "config.toml"
 $EnvPath    = Join-Path $DataDir ".env"
 

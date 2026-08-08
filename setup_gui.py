@@ -131,6 +131,9 @@ def write_env(token: str, parent_url: str) -> None:
     Written without a BOM: everything that reads it opens it as UTF-8 and a
     leading \\ufeff would corrupt the first key name.
     """
+    # The data root may not exist yet: a packaged install writes here before
+    # anything else has had reason to create it.
+    os.makedirs(os.path.dirname(os.path.abspath(ENV_PATH)), exist_ok=True)
     lines = []
     with open(EXAMPLE_ENV, encoding="utf-8") as handle:
         for line in handle.read().splitlines():

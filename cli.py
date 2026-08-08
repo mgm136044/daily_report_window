@@ -123,7 +123,10 @@ def run_installer(argv: list[str]) -> int:
     command += argv
 
     import subprocess
-    return subprocess.run(command, cwd=paths.data_root()).returncode
+    # `cwd` has to exist before subprocess will start anything — a missing one
+    # is WinError 267 from CreateProcess, not from the installer, which reads
+    # as "the installer is broken" rather than "the folder is not there yet".
+    return subprocess.run(command, cwd=paths.ensure_data_root()).returncode
 
 
 def main() -> int:

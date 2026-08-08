@@ -22,7 +22,10 @@ from datetime import datetime
 NOTION_API = "https://api.notion.com"
 NOTION_VERSION = "2026-03-11"
 HERE = os.path.dirname(os.path.abspath(__file__))
-ENV_PATH = os.path.join(HERE, ".env")
+import paths
+
+# Same reason as setup_notion_db: written, so it follows the data root.
+ENV_PATH = paths.data(".env")
 
 sys.path.insert(0, HERE)
 

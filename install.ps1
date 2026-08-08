@@ -513,7 +513,13 @@ if ($Frozen) {
     # Inside a bundle the skill lives under _internal, which is replaced
     # wholesale on upgrade — a junction into it would dangle. Copying costs a
     # few kilobytes and survives.
-    $skillSource = Join-Path $PSScriptRoot "_internal\skills\daily-report"
+    #
+    # The path is the same as the source case: this script *is* `_internal\
+    # install.ps1` when frozen, so $PSScriptRoot already ends in `_internal`.
+    # Adding it again pointed at `_internal\_internal\skills`, which does not
+    # exist — and the failure is a Warn, so the skill was simply never
+    # installed and nothing said so.
+    $skillSource = Join-Path $PSScriptRoot "skills\daily-report"
 }
 New-Item -ItemType Directory -Force -Path $skillRoot | Out-Null
 $existingLink = Get-Item $skillLink -ErrorAction SilentlyContinue

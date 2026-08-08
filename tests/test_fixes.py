@@ -977,6 +977,95 @@ def test_written_directories_follow_the_data_root():
 
 # --- 패키징 -----------------------------------------------------------------
 
+def test_every_written_file_follows_the_data_root():
+    """`setup_notion_db` was the one module that never made the move.
+
+    It read `.env` from its own directory, which is correct as a script from a
+    checkout — the two are the same place — and wrong once frozen, where that
+    directory is the bundle's `_internal` and holds only `.env.example`. The
+    packaged install therefore died at step 6 of 9 with a FileNotFoundError,
+    before the scheduled task, the shortcut or the skill were ever registered.
+    Nothing scheduled anything at 04:05, ever.
+
+    No test mentioned `setup_notion_db`, and CI's smoke test only ran `doctor`.
+    """
+    import notion_upsert
+    import paths
+    import setup_notion_db
+    for module in (setup_notion_db, notion_upsert):
+        assert module.ENV_PATH == paths.data(".env"), \
+            f"{module.__name__}.ENV_PATH 가 데이터 루트를 따르지 않는다"
+
+    # and no writer may derive a path from its own file location
+    for name in ("setup_notion_db.py", "notion_upsert.py"):
+        source = open(os.path.join(ROOT, name), encoding="utf-8").read()
+        line = next((l for l in source.splitlines() if l.startswith("ENV_PATH")), "")
+        assert "__file__" not in line and "HERE" not in line, f"{name}: {line}"
+
+def test_the_windows_invoke_the_app_not_a_python_file():
+    """Frozen, `sys.executable` is the GUI. Handing it `doctor.py` opens a
+    second window: the argument is not a command, so the dispatcher falls
+    through to its default. The button appears to work, blocks until the
+    duplicate is closed, and reports exit code 0 with no diagnostics."""
+    import paths
+    argv = paths.command_argv("doctor")
+    if paths.bundled():
+        assert argv[0].lower().endswith("daily-report.exe")
+        assert argv[1] == "doctor"
+    else:
+        assert argv[-1].endswith("doctor.py")
+
+    for name in ("status_window.py", "setup_gui.py"):
+        source = open(os.path.join(ROOT, name), encoding="utf-8").read()
+        assert "sys.executable, \"-X\", \"utf8\", \"doctor.py\"" not in source
+        assert "paths.command_argv(" in source, f"{name} 이 헬퍼를 쓰지 않는다"
+
+def test_the_bundle_ships_the_documents_the_wizard_opens():
+    """The wizard's token button and install.ps1's token gate both point at
+    docs/. Left out of the bundle, the one thing that tells a new user how to
+    get a Notion token — in the window built around the token field — opened a
+    browser on a file that was not there."""
+    spec = open(os.path.join(ROOT, "daily-report.spec"), encoding="utf-8").read()
+    assert '("docs", "docs")' in spec, "번들에 docs 가 없다"
+    import setup_gui
+    assert os.path.exists(setup_gui.token_docs()), "토큰 안내 문서를 찾지 못한다"
+
+@windows_only
+def test_the_frozen_skill_path_is_not_doubled():
+    """The bundled install.ps1 *is* `_internal\\install.ps1`, so $PSScriptRoot
+    already ends in `_internal`. Adding it again pointed at a directory that
+    does not exist — and the failure is a Warn, so the skill was simply never
+    installed and nothing said so."""
+    script = open(os.path.join(ROOT, "install.ps1"), encoding="utf-8-sig").read()
+    assert '"_internal\\skills' not in script, "$PSScriptRoot 에 _internal 을 또 붙인다"
+
+@windows_only
+def test_installer_iss_is_utf8_with_a_bom():
+    """Inno Setup decodes .iss as ANSI without one, so on a cp949 machine every
+    Korean string in the setup UI and the Start Menu becomes mojibake. The same
+    hazard install.ps1 carries a comment about, in the file next to it."""
+    with open(os.path.join(ROOT, "installer.iss"), "rb") as handle:
+        assert handle.read(3) == b"\xef\xbb\xbf", "installer.iss 에 BOM 이 없다"
+
+def test_an_unknown_subcommand_is_not_treated_as_a_date():
+    """`daily-report doctr` fell through to `run`, which parsed it as a target
+    day and died with a ValueError traceback. The usage text was unreachable."""
+    source = open(os.path.join(ROOT, "cli.py"), encoding="utf-8").read()
+    assert "알 수 없는 명령" in source
+    assert r"\d{4}-\d{2}-\d{2}" in source
+
+def test_uninstall_refuses_rather_than_guessing_the_task_name():
+    """Without a config.toml, `config.load()` falls back to the example, whose
+    label is `com.example.daily-report`. Uninstall reported "no task" and
+    exited 0 while the real one stayed registered — and Inno runs it hidden, so
+    the orphan the [UninstallRun] block exists to prevent was created
+    invisibly."""
+    source = open(os.path.join(ROOT, "cli.py"), encoding="utf-8").read()
+    body = source.split("def remove_installation")[1]
+    assert "config.using_example()" in body, "예시 설정의 label 로 제거를 시도한다"
+
+
+
 def test_frozen_build_keeps_utf8_and_unbuffered_output():
     """A frozen build has no command line to carry `-X utf8 -u`.
 
@@ -1142,11 +1231,30 @@ def test_every_powershell_block_in_the_workflow_parses():
     assert result.returncode == 0, f"워크플로 PowerShell 파싱 실패:\n{output}"
     assert "OK" in output and "검사한 블록이 없습니다" not in output
 
-def test_ci_scans_the_built_artifacts_not_just_the_source():
+def test_the_installer_ships_only_scanned_files():
+    """Scanning the compiled installer was a check that could not fail.
+
+    Its payload is a solid LZMA2 stream, so a raw byte search finds nothing
+    whatever the contents — measured: the same marker is found in `dist/`,
+    found with `Compression=none`, invisible with the shipped `lzma2`. A check
+    incapable of failing reads as assurance, which is worse than none.
+
+    What actually holds is that everything the installer ships comes from the
+    directory that *is* scanned, before compression. So that is what is
+    asserted, here and in CI.
+    """
+    import re as _re
+    iss = open(os.path.join(ROOT, "installer.iss"), encoding="utf-8-sig").read()
+    sources = _re.findall(r'(?m)^\s*Source:\s*"([^"]+)"', iss)
+    assert sources, "installer.iss 에 [Files] 항목이 없다"
+    for value in sources:
+        assert value.startswith("{#SourceDir}"), \
+            f"스캔되지 않은 경로가 설치기에 포함된다: {value}"
+
     workflow = open(os.path.join(ROOT, ".github", "workflows", "build.yml"),
                     encoding="utf-8").read()
-    assert workflow.count("check_binary_no_pii.py") >= 2, \
-        "번들과 설치기 양쪽을 검사해야 한다"
+    assert "check_binary_no_pii.py dist/daily-report" in workflow, \
+        "압축 전 디렉터리를 검사하지 않는다"
 
 def test_the_release_pipeline_makes_signing_an_explicit_decision():
     """Not a wall — a decision that has to be made on purpose.
@@ -1832,6 +1940,46 @@ def test_installer_writes_config_without_a_bom():
             f"{target} 이 BOM 없이 기록되지 않습니다"
     assert '$ConfigPath = Join-Path $DataDir "config.toml"' in body
     assert '$EnvPath    = Join-Path $DataDir ".env"' in body
+
+def test_the_installers_intermediate_state_counts_as_unconfigured():
+    """install.ps1 copies `.env.example` to `.env` before the token gate.
+
+    So "both files exist" was true from the moment setup stopped and told the
+    user to fill in a token — and the launcher showed them the status window
+    instead of the wizard, in the one state the wizard exists for.
+    """
+    import gui
+    original = os.environ.get("DAILY_REPORT_HOME")
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            os.environ["DAILY_REPORT_HOME"] = tmp
+            import paths
+            with open(paths.data("config.toml"), "w", encoding="utf-8") as handle:
+                handle.write("[launchd]\nlabel = \"x\"\n")
+
+            # the state install.ps1 actually stops in: .env copied, unfilled
+            with open(paths.data(".env"), "w", encoding="utf-8") as handle:
+                handle.write("DAILY_REPORT_NOTION_TOKEN=\n"
+                             "DAILY_REPORT_PARENT_PAGE_URL=\n"
+                             "DAILY_REPORT_DATABASE_ID=\n")
+            assert not gui.is_configured(), "토큰 게이트 상태를 설정 완료로 본다"
+
+            # token but no database yet — setup did not finish
+            with open(paths.data(".env"), "w", encoding="utf-8") as handle:
+                handle.write("DAILY_REPORT_NOTION_TOKEN=ntn_x\n"
+                             "DAILY_REPORT_DATABASE_ID=\n")
+            assert not gui.is_configured()
+
+            # finished
+            with open(paths.data(".env"), "w", encoding="utf-8") as handle:
+                handle.write("DAILY_REPORT_NOTION_TOKEN=ntn_x\n"
+                             "DAILY_REPORT_DATABASE_ID=abc-123\n")
+            assert gui.is_configured()
+        finally:
+            if original is None:
+                os.environ.pop("DAILY_REPORT_HOME", None)
+            else:
+                os.environ["DAILY_REPORT_HOME"] = original
 
 def test_log_redirection_happens_when_run_day_is_imported_not_only_run():
     """The packaged build imports this module; it does not execute it.

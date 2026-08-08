@@ -233,14 +233,16 @@ def build(root, tk, ttk, scrolledtext):
     # --- buttons -----------------------------------------------------------
     bar = ttk.Frame(outer)
     bar.pack(fill="x", pady=(10, 0))
-    python = sys.executable
 
     yesterday = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
     actions = [
-        ("진단 실행", lambda: run_command([python, "-X", "utf8", "doctor.py"], "doctor.py")),
+        ("진단 실행",
+         lambda: run_command(paths.command_argv("doctor"), "doctor")),
         (f"{yesterday} 다시 생성",
-         lambda: run_command([python, "-X", "utf8", "run_day.py", yesterday],
-                             f"run_day.py {yesterday}")),
+         lambda: run_command(paths.command_argv("run_day", yesterday)
+                             if not paths.bundled()
+                             else paths.command_argv("run", yesterday),
+                             f"run {yesterday}")),
         ("로그 열기", lambda: open_in_file_manager(run_day.LOG_DIR)),
     ]
     url = notion_url()

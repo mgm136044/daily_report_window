@@ -20,17 +20,30 @@ platform_support.PLATFORM.configure_stdio()
 
 
 def is_configured() -> bool:
-    """Has this install ever been set up?
+    """Has this install ever been set up *far enough to run*?
 
-    Both files, not either. `config.toml` alone means the installer wrote it
-    and then stopped at the token gate — which is the state a first run is
-    most likely to be in, and the one where showing a status window full of
-    blanks is least useful.
+    Not "do both files exist". `install.ps1` copies `.env.example` to `.env`
+    before it reaches the token gate, so the state it stops in — config written,
+    token still missing — has both files present and was classified as
+    configured. Someone who ran the installer and got as far as being told to
+    fill in a token then opened the status window instead of the wizard, which
+    is the one moment the wizard is for.
+
+    A database id is the honest test: it is written only after the database has
+    actually been created, which is the last thing setup does.
     """
     import os
     import paths
-    return (os.path.exists(paths.data("config.toml"))
-            and os.path.exists(paths.data(".env")))
+
+    if not os.path.exists(paths.data("config.toml")):
+        return False
+    try:
+        from notion_upsert import load_env
+        env = load_env(paths.data(".env"))
+    except (OSError, ValueError):
+        return False
+    return bool(env.get("DAILY_REPORT_DATABASE_ID", "").strip()
+                and env.get("DAILY_REPORT_NOTION_TOKEN", "").strip())
 
 
 def main() -> int:

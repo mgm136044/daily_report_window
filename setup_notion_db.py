@@ -19,7 +19,15 @@ import notion_schema  # noqa: E402
 
 NOTION_API = "https://api.notion.com"
 NOTION_VERSION = "2026-03-11"
-ENV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+import paths
+
+# `.env` is written, so it follows the data root — not this file's directory.
+# Frozen, that directory is the bundle's `_internal`, where only `.env.example`
+# ever exists: the packaged install died here at step 6 of 9 with a
+# FileNotFoundError, before registering the task, the shortcut or the skill.
+# The module was missed when everything else moved to `paths` because it is
+# correct as a script from a checkout, where the two are the same directory.
+ENV_PATH = paths.data(".env")
 REQUEST_TIMEOUT_SEC = 30
 
 # Title and property names come from notion_schema so the writer queries the

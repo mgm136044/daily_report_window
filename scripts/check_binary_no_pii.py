@@ -10,6 +10,14 @@ name to everyone who downloads it.
 Searched in UTF-8, UTF-16LE and Latin-1, because a path can appear in any of
 them inside the same file.
 
+**It only sees uncompressed bytes, and that is a real limit.** Pointed at an
+Inno Setup installer — whose payload is a solid LZMA2 stream — it cannot find
+anything and will report clean whatever the contents. Measured: the same marker
+is found in `dist/`, found in an installer built with `Compression=none`, and
+invisible in one built with the shipped `lzma2`. So scan the **staged directory
+before it is compressed**, which is what CI does; scanning the compiled
+installer is not a substitute and is not treated as one.
+
     python scripts/check_binary_no_pii.py dist/daily-report
     python scripts/check_binary_no_pii.py dist/setup.exe --extra "myname"
 
@@ -112,8 +120,15 @@ def main() -> int:
     for path in files:
         hits = scan_file(path, terms)
         if hits:
-            findings[os.path.relpath(path, args.target
-                                     if os.path.isdir(args.target) else ".")] = hits
+            # relpath raises across drives, and this line is only reached when
+            # something was found — so the success path never crashed and the
+            # finding path did, replacing the report with a traceback.
+            base = args.target if os.path.isdir(args.target) else os.path.dirname(path)
+            try:
+                label = os.path.relpath(path, base)
+            except ValueError:
+                label = path
+            findings[label] = hits
 
     if not findings:
         print("✅ 빌드 산출물에서 이 기기의 식별자를 찾지 못했습니다")

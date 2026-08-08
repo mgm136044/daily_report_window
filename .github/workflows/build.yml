@@ -199,13 +199,30 @@ jobs:
             "$hash  $($_.Name)" | Out-File "$($_.FullName).sha256" -Encoding ascii
           }
 
-      - name: Scan the installer too
+      # Deliberately NOT a scan of the compiled installer.
+      #
+      # That step existed and was incapable of failing: the Inno payload is a
+      # solid LZMA2 stream, so a raw byte search finds nothing regardless of
+      # contents. Measured — the same marker is found in `dist/`, found with
+      # `Compression=none`, and invisible with the shipped `lzma2`. A check
+      # that cannot fail reads as assurance and is worse than none.
+      #
+      # Everything the installer ships comes from `dist/daily-report`, which is
+      # scanned above, before compression. Anything added to [Files] from
+      # outside that directory would not be covered by either — so this asserts
+      # there is nothing of the sort.
+      - name: Confirm the installer ships only what was scanned
         shell: pwsh
         run: |
-          Get-ChildItem dist\*.exe | ForEach-Object {
-            python -X utf8 scripts/check_binary_no_pii.py $_.FullName
-            if ($LASTEXITCODE -ne 0) { throw "설치기에 빌드 머신 식별자가 있습니다" }
+          $iss = Get-Content installer.iss -Raw -Encoding UTF8
+          $sources = [regex]::Matches($iss, '(?m)^\s*Source:\s*"([^"]+)"')
+          foreach ($match in $sources) {
+            $value = $match.Groups[1].Value
+            if ($value -notlike '{#SourceDir}*') {
+              throw "스캔되지 않은 경로가 설치기에 포함됩니다: $value"
+            }
           }
+          "설치기 [Files] 항목 $($sources.Count)개 — 전부 스캔된 SourceDir 에서 옵니다"
 
       - uses: actions/upload-artifact@v4
         with:

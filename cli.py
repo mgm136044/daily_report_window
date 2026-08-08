@@ -59,6 +59,18 @@ def remove_installation() -> int:
         print("uninstall 명령은 Windows 전용입니다.", file=sys.stderr)
         return 2
 
+    # `config.using_example()` matters more than an empty label here. Without a
+    # config.toml, `load()` silently falls back to the example — whose label is
+    # `com.example.daily-report` — so this reported "등록된 작업 없음" and exited
+    # 0 while the real `com.<user>.daily-report` task stayed registered. Inno
+    # runs this hidden, so the orphan the [UninstallRun] block exists to prevent
+    # was created invisibly.
+    if config.using_example():
+        print("config.toml 이 없어 작업 이름을 알 수 없습니다.\n"
+              "  남아 있는 작업을 직접 지우세요:\n"
+              "    Get-ScheduledTask | Where-Object { $_.TaskName -like '*daily-report*' }",
+              file=sys.stderr)
+        return 1
     label = config.load().get("launchd", {}).get("label", "")
     if not label:
         print("config.toml 에서 작업 이름을 읽지 못했습니다 — 수동으로 제거하세요.",
@@ -130,6 +142,8 @@ def run_installer(argv: list[str]) -> int:
 
 
 def main() -> int:
+    import re
+
     argv = sys.argv[1:]
     command = "run"
     if argv and argv[0] in COMMANDS:
@@ -137,6 +151,15 @@ def main() -> int:
     elif argv and argv[0] in ("-h", "--help", "help"):
         print(USAGE)
         return 0
+    elif argv and not argv[0].startswith("-") \
+            and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", argv[0]):
+        # Anything that is neither a command nor a date used to fall through to
+        # `run`, which then tried to parse it as one: `daily-report doctr` died
+        # with `ValueError: time data 'doctr' does not match format` and a
+        # traceback. The usage text below was unreachable.
+        print(f"알 수 없는 명령: {argv[0]}\n", file=sys.stderr)
+        print(USAGE, file=sys.stderr)
+        return 2
 
     # Rewritten *before* the imports below. `run_day` decides at import time
     # whether to redirect its output, and every one of these modules reads

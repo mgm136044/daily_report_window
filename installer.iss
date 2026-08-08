@@ -1,4 +1,4 @@
-; Inno Setup script for the packaged build.
+﻿; Inno Setup script for the packaged build.
 ;
 ;     iscc installer.iss /DSourceDir=dist\daily-report /DAppVersion=0.1.0
 ;

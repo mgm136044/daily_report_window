@@ -21,6 +21,11 @@ RESOURCES = [
     ("prompts", "prompts"),
     ("templates", "templates"),
     ("skills", "skills"),
+    # The setup wizard's "토큰 발급 방법 열기" button opens one of these, and
+    # install.ps1 prints their paths at the token gate. Left out, the one
+    # button that tells a new user how to get the Notion token — in the window
+    # whose whole reason to exist is the token field — opened nothing.
+    ("docs", "docs"),
     ("config.example.toml", "."),
     ("config.windows.example.toml", "."),
     (".env.example", "."),

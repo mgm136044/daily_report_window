@@ -65,6 +65,27 @@ def data(*parts: str) -> str:
     return os.path.join(data_root(), *parts)
 
 
+def command_argv(subcommand: str, *arguments: str) -> list[str]:
+    """How to invoke one of this tool's own commands from inside it.
+
+    The windows shell out to run `doctor` and to regenerate a day. Built as
+    `[sys.executable, "-X", "utf8", "doctor.py"]` that works from a checkout
+    and does something quietly absurd when frozen: `sys.executable` is
+    `daily-report-gui.exe`, `doctor.py` is not in the bundle, and the argument
+    is not a command — so the dispatcher falls through to its default and
+    **opens a second copy of the window**. The button appears to work, blocks
+    until the duplicate is closed, and reports exit code 0 with no diagnostics.
+    """
+    if not bundled():
+        return [sys.executable, "-X", "utf8",
+                resource(f"{subcommand}.py"), *arguments]
+    console = os.path.join(os.path.dirname(os.path.abspath(sys.executable)),
+                           "daily-report.exe")
+    if not os.path.exists(console):
+        console = os.path.abspath(sys.executable)
+    return [console, subcommand, *arguments]
+
+
 def ensure_data_root() -> str:
     """Create the data directory, and return it.
 

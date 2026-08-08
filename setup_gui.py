@@ -313,8 +313,8 @@ def build(root, tk, ttk, scrolledtext):
     install_button = ttk.Button(bar, text="설치", command=install)
     install_button.pack(side="left")
     ttk.Button(bar, text="진단만 실행",
-               command=lambda: run([sys.executable, "-X", "utf8", "doctor.py"],
-                                   "doctor.py")).pack(side="left", padx=(6, 0))
+               command=lambda: run(paths.command_argv("doctor"),
+                                   "doctor")).pack(side="left", padx=(6, 0))
 
     # --- repository probe, off the main thread -----------------------------
     def probe():

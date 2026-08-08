@@ -5,7 +5,7 @@
 # the repository URL does not already show.
 
 PackageIdentifier: mgm136044.daily-report
-PackageVersion: 0.1.0
+PackageVersion: 0.1.4
 PackageLocale: ko-KR
 Publisher: mgm136044
 PublisherUrl: https://github.com/mgm136044

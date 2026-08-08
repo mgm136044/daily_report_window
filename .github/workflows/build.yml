@@ -74,12 +74,37 @@ jobs:
   verify:
     needs: test
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      # One version for the installer filename, the Inno metadata and the
+      # release, taken from the tag when there is one. A build that is not a
+      # release is marked as such rather than borrowing a version number it
+      # does not have.
+      - name: Work out the version
+        id: version
+        shell: pwsh
+        run: |
+          $ref = "${{ github.ref }}"
+          if ($ref -like 'refs/tags/v*') {
+            $version = $ref -replace '^refs/tags/v', ''
+          } else {
+            $version = "0.0.0-dev"
+          }
+          "version=$version" | Out-File $env:GITHUB_OUTPUT -Append
+          Write-Host "버전: $version"
+
+      # This file's own PowerShell, parsed before anything depends on it. The
+      # release job runs only on a tag, so a mistake in it can sit unnoticed
+      # until the moment it matters most.
+      - name: Check this workflow's PowerShell parses
+        run: python -X utf8 scripts/check_workflow_powershell.py .github/workflows/build.yml
 
       - name: Check install.ps1 parses under Windows PowerShell
         shell: powershell
@@ -160,16 +185,27 @@ jobs:
             $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
           }
           if (-not $iscc) { throw "Inno Setup 을 찾지 못했습니다" }
+          $version = "${{ steps.version.outputs.version }}"
           & $iscc installer.iss /DSourceDir=dist\daily-report `
-                  /DAppVersion=0.1.0 /O"$PWD\dist"
+                  /DAppVersion=$version /O"$PWD\dist"
           if ($LASTEXITCODE -ne 0) { throw "설치기 빌드 실패" }
+          # The hash is written beside the installer: it is what makes an
+          # unsigned download verifiable, and what winget checks before it
+          # will install anything.
           Get-ChildItem dist\*.exe | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
             "$($_.Name)  $([math]::Round($_.Length/1MB,1)) MB"
-            "SHA256 $((Get-FileHash $_.FullName -Algorithm SHA256).Hash)"
+            "SHA256 $hash"
+            "$hash  $($_.Name)" | Out-File "$($_.FullName).sha256" -Encoding ascii
           }
 
       - name: Scan the installer too
-        run: python -X utf8 scripts/check_binary_no_pii.py dist/daily-report-setup-0.1.0.exe
+        shell: pwsh
+        run: |
+          Get-ChildItem dist\*.exe | ForEach-Object {
+            python -X utf8 scripts/check_binary_no_pii.py $_.FullName
+            if ($LASTEXITCODE -ne 0) { throw "설치기에 빌드 머신 식별자가 있습니다" }
+          }
 
       - uses: actions/upload-artifact@v4
         with:
@@ -177,6 +213,16 @@ jobs:
           path: |
             dist/daily-report
             dist/*.exe
+            dist/*.sha256
+
+      # Separately, because the release job wants only these two and not the
+      # 24 MB of unpacked bundle beside them.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer
+          path: |
+            dist/*.exe
+            dist/*.sha256
 
   release:
     needs: verify
@@ -212,17 +258,32 @@ jobs:
             "  winget 이나 git clone 경로에서는 뜨지 않습니다."
             exit 0
           }
-          throw @"
-          서명 여부가 정해지지 않아 릴리스를 중단합니다.
+          # An array rather than a here-string. Both work — a YAML block scalar
+          # strips the common indentation, so a `"@` written at this level does
+          # end up at column 0 where PowerShell needs it — but the array keeps
+          # the message readable at the indentation it is written in, and does
+          # not depend on that stripping being understood by whoever edits it.
+          $message = @(
+            "서명 여부가 정해지지 않아 릴리스를 중단합니다."
+            ""
+            "둘 중 하나를 고르세요."
+            "  - 서명한다      : 저장소 시크릿 SIGNING_ENABLED 를 설정하고 아래 서명 단계를 채운다"
+            "  - 서명하지 않는다: 저장소 변수 ALLOW_UNSIGNED_RELEASE 를 true 로 둔다"
+            ""
+            "미서명이 곧 실패는 아닙니다. SmartScreen 은 Mark of the Web 에 반응하고,"
+            "그건 브라우저와 첨부파일 관리자가 붙입니다 — winget 과 git clone 은 붙이지 않습니다."
+            "브라우저 다운로드를 주 배포 경로로 삼을 때만 서명이 사실상 필수입니다."
+          ) -join "`n"
+          throw $message
 
-          둘 중 하나를 고르세요.
-            - 서명한다      : 저장소 시크릿 SIGNING_ENABLED 를 설정하고 아래 서명 단계를 채운다
-            - 서명하지 않는다: 저장소 변수 ALLOW_UNSIGNED_RELEASE 를 true 로 둔다
-
-          미서명이 곧 실패는 아닙니다. SmartScreen 은 Mark of the Web 에 반응하고,
-          그건 브라우저와 첨부파일 관리자가 붙입니다 — winget 과 git clone 은 붙이지 않습니다.
-          브라우저 다운로드를 주 배포 경로로 삼을 때만 서명이 사실상 필수입니다.
-          "@
+      # Built once, in `verify`, and taken from there. Rebuilding here would
+      # produce a different binary from the one that passed the smoke test and
+      # the identifier scan — and the hash published below has to be the hash
+      # of the file that was actually checked.
+      - uses: actions/download-artifact@v4
+        with:
+          name: installer
+          path: dist
 
       # - name: Sign
       #   Fill in once a certificate exists. Azure Trusted Signing:
@@ -231,6 +292,60 @@ jobs:
 
       - name: Publish the release
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          Write-Host "여기서 dist\*.exe 를 릴리스 자산으로 올립니다."
-          Write-Host "winget 매니페스트의 InstallerUrl 이 이 자산을 가리킵니다."
+          $version = "${{ needs.verify.outputs.version }}"
+          $installer = Get-ChildItem dist\*.exe | Select-Object -First 1
+          if (-not $installer) { throw "설치기를 찾지 못했습니다" }
+          $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash
+          $signed = if ("${{ secrets.SIGNING_ENABLED }}") { "서명됨" } else { "**서명되지 않음**" }
+
+          # An array, and the two backtick variables, because this text is
+          # markdown: it needs literal backticks for code fences and inline
+          # code, and a backtick is PowerShell's escape character. Building
+          # them from a char code is plainer than a wall of doubled backticks,
+          # which is what the here-string form of this required.
+          $fence = [string][char]0x60 * 3
+          $tick = [string][char]0x60
+          $notes = @(
+            "## 설치"
+            ""
+            $fence
+            "winget install mgm136044.daily-report"
+            $fence
+            ""
+            "또는 저장소를 클론해서 ${tick}install.ps1${tick} 을 실행해도 됩니다."
+            "그쪽이 이 프로젝트에서 가장 오래 검증된 경로입니다."
+            ""
+            "## 이 파일"
+            ""
+            "| | |"
+            "|---|---|"
+            "| 파일 | ${tick}$($installer.Name)${tick} |"
+            "| 크기 | $([math]::Round($installer.Length/1MB,1)) MB |"
+            "| SHA256 | ${tick}$hash${tick} |"
+            "| 서명 | $signed |"
+            ""
+            "서명이 없으므로 **브라우저로 직접 받아 실행하면 SmartScreen 경고가 뜹니다.**"
+            "그 경고는 Mark of the Web 에 반응하는 것이라 ${tick}winget${tick} 이나"
+            "${tick}git clone${tick} 경로에서는 나타나지 않습니다."
+            "브라우저로 받으셨다면 위 SHA256 을 대조하세요:"
+            ""
+            $fence
+            "(Get-FileHash $($installer.Name) -Algorithm SHA256).Hash"
+            $fence
+            ""
+            "## 준비물"
+            ""
+            "Windows 10/11, git, 그리고 **로그인된 Claude Code CLI**."
+            "요약을 ${tick}claude -p${tick} 가 만들기 때문에 CLI 없이는 수집만 되고"
+            "보고서가 나오지 않습니다. Notion 내부 연결 토큰도 필요합니다 —"
+            "설치 마법사가 안내합니다."
+          ) -join "`n"
+
+          $notes | Out-File release-notes.md -Encoding utf8
+          gh release create "v$version" `
+            "$($installer.FullName)" "$($installer.FullName).sha256" `
+            --title "v$version" --notes-file release-notes.md
+          Write-Host "릴리스 v$version 생성됨"

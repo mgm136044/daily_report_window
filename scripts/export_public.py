@@ -46,6 +46,7 @@ ALLOW = [
     "installer.iss",
     "packaging/winget/*",
     "scripts/check_binary_no_pii.py",
+    "scripts/check_workflow_powershell.py",
     ".github/workflows/*",
     "collect.py",
     "collect_codex.py",

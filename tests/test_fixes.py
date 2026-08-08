@@ -1120,6 +1120,28 @@ def test_the_binary_scanner_actually_finds_things():
     assert checker.mask("mysecretvalue") != "mysecretvalue"
     assert "secret" not in checker.mask("mysecretvalue")
 
+@windows_only
+def test_every_powershell_block_in_the_workflow_parses():
+    """A `run:` block is unchecked until the job containing it runs.
+
+    The release job only fires on a tag, so anything wrong in it could sit
+    there for months and then fail at the moment it was most needed — which is
+    exactly what happened twice already, both times with a ParserError naming a
+    token rather than the problem.
+
+    Parsed the way Actions will actually run it: the YAML block scalar's common
+    indentation stripped, `${{ }}` expressions replaced, and the result handed
+    to the real PowerShell parser with a BOM.
+    """
+    result = subprocess.run(
+        [sys.executable, "-X", "utf8",
+         os.path.join(ROOT, "scripts", "check_workflow_powershell.py"),
+         os.path.join(ROOT, ".github", "workflows", "build.yml")],
+        capture_output=True, timeout=300)
+    output = result.stdout.decode("utf-8", errors="replace")
+    assert result.returncode == 0, f"워크플로 PowerShell 파싱 실패:\n{output}"
+    assert "OK" in output and "검사한 블록이 없습니다" not in output
+
 def test_ci_scans_the_built_artifacts_not_just_the_source():
     workflow = open(os.path.join(ROOT, ".github", "workflows", "build.yml"),
                     encoding="utf-8").read()

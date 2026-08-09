@@ -117,9 +117,17 @@ def remove_installation(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 1
 
+    # The label goes through the same escaper the rest of the codebase uses to
+    # build PowerShell literals. It was interpolated raw here, alone among the
+    # places that do this — and a label containing a quote closes the literal
+    # early, so the remainder is parsed as code. The installer generates the
+    # label by stripping everything but `[a-z0-9]` from the account name, so
+    # this is reached by hand-editing config.toml rather than by an attacker;
+    # it is still a command assembled by string concatenation, in a file that
+    # already knows better twenty lines away.
     script = (
         "$ErrorActionPreference = 'SilentlyContinue';"
-        f"$label = '{label}';"
+        f"$label = {platform_support._ps_literal(label)};"
         "$task = Get-ScheduledTask -TaskName $label;"
         "if ($task) { Unregister-ScheduledTask -TaskName $label -Confirm:$false;"
         "  Write-Host \"작업 제거: $label\" } else { Write-Host '등록된 작업 없음' };"

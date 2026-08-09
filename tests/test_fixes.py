@@ -1700,6 +1700,32 @@ def test_the_scheduled_time_is_configurable_and_validated():
         assert hour >= parsed["day"]["boundary_hour"], \
             f"{name}: 예약 시각이 하루 경계보다 이르다"
 
+def test_powershell_literals_are_escaped_everywhere_they_are_built():
+    """KISA 시큐어코딩 1-5 (CWE-78). Found by running the checklist over this
+    repository.
+
+    `platform_support._ps_literal` exists for exactly this and is used at every
+    other site. `cli.remove_installation` interpolated the scheduled-task label
+    into a single-quoted PowerShell literal with an f-string, so a label
+    containing a quote closes the literal early and the rest of the value is
+    parsed as code.
+
+    Not attacker-controlled in practice — the installer builds the label by
+    stripping the account name to `[a-z0-9]` — so this is reachable by editing
+    one's own config.toml. It is still a command assembled by concatenation
+    beside a helper that does it correctly.
+    """
+    escape = platform_support._ps_literal
+    # the repository's own placeholder label — anything else reads to
+    # check_no_pii.py as a real account's task name, and it is right to
+    assert escape("com.example.daily-report") == "'com.example.daily-report'"
+    assert escape("o'brien") == "'o''brien'", "작은따옴표가 이스케이프되지 않는다"
+
+    source = open(os.path.join(ROOT, "cli.py"), encoding="utf-8").read()
+    body = source.split("def remove_installation")[1].split("def run_installer")[0]
+    assert "_ps_literal(label)" in body, "라벨이 이스케이프 없이 조립된다"
+    assert "'{label}'" not in body, "f-string 보간이 남아 있다"
+
 def test_purge_refuses_to_run_from_a_checkout():
     """`--purge` deletes the data root. From a checkout that *is* the source
     directory, so this would delete the repository — working tree, tests and

@@ -1925,6 +1925,40 @@ def test_the_window_and_the_installer_agree_on_a_schedule_time():
     finally:
         config.load()["day"]["boundary_hour"] = original
 
+@windows_only
+def test_the_install_puts_a_shortcut_on_the_desktop_too():
+    """Owned by install.ps1 rather than the installer's [Icons], because this
+    script is the whole of a checkout install — one owner means both kinds of
+    install put the same shortcut in the same place."""
+    script = open(os.path.join(ROOT, "install.ps1"), encoding="utf-8-sig").read()
+    step = script.split("Step \"8/9")[1].split("Step \"9/9")[0]
+    assert "GetFolderPath('Desktop')" in step, "바탕 화면 바로 가기를 만들지 않는다"
+    assert "GetFolderPath('Programs')" in step, "시작 메뉴 바로 가기가 사라졌다"
+
+    # and uninstalling takes both, or one points at an executable that is gone
+    cli_source = open(os.path.join(ROOT, "cli.py"), encoding="utf-8").read()
+    removal = cli_source.split("def remove_installation")[1].split("def run_installer")[0]
+    assert "'Programs','Desktop'" in removal.replace(" ", ""), \
+        "제거가 바탕 화면 바로 가기를 남긴다"
+
+def test_the_wizard_closes_itself_only_when_the_install_worked():
+    """A wizard that stays open after it worked leaves the person deciding
+    whether it did. One that closes after it failed takes the error away with
+    it — so the exit code decides, and nothing else can."""
+    source = open(os.path.join(ROOT, "setup_gui.py"), encoding="utf-8").read()
+    drain = source.split("def drain(")[1].split("def run(")[0]
+    assert 'busy.get("code") == 0' in drain, "종료 코드를 보지 않고 닫는다"
+    assert "install.ps1" in drain, "진단만 돌려도 창이 닫힌다"
+    assert "root.after(CLOSE_DELAY_MS" in drain, "즉시 닫아 마지막 줄을 못 읽는다"
+
+    # the code has to actually be recorded, or the branch above never fires
+    runner = source.split("def run(argv, title)")[1].split("def install(")[0]
+    assert 'busy["code"] = process.returncode' in runner
+
+    # and it hands over to the window they will use from now on
+    assert "def open_status_window" in source
+    assert "paths.bundled()" in source.split("def open_status_window")[1][:400]
+
 def test_the_installer_script_has_no_stray_section_tag():
     """ISCC reads any line whose first non-blank characters are `[...]` as a
     section tag — including inside a `{ }` Pascal comment, because the

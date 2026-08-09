@@ -567,25 +567,31 @@ Ok "작업 '$label' 등록됨 (매일 $scheduleTime, 로그온 유형 $($info.Pr
 Ok "실행: $TaskCommand $TaskArguments"
 
 # --------------------------------------------------------------- shortcut ---
-Step "8/9  시작 메뉴 바로 가기"
+Step "8/9  바로 가기"
 # pythonw so opening the status window does not flash a console behind it.
-$startMenu = [Environment]::GetFolderPath('Programs')
-$shortcut = Join-Path $startMenu "하루 마감 보고서.lnk"
-try {
-    $wscript = New-Object -ComObject WScript.Shell
-    $link = $wscript.CreateShortcut($shortcut)
-    $link.TargetPath       = $GuiCommand
-    $link.Arguments        = $GuiArguments
-    $link.WorkingDirectory = $PSScriptRoot
-    # No em-dash: the shortcut's Description travels through a COM interface
-    # that drops it to the ANSI codepage, and it shows up as "?" in the tooltip.
-    $link.Description      = "하루 마감 보고서 상태 확인과 진단"
-    $link.Save()
-    Ok "$shortcut"
-} catch {
-    Warn "바로 가기를 만들지 못했습니다: $($_.Exception.Message)"
-    Warn "직접 실행: $GuiCommand $GuiArguments"
+#
+# Both places, from here rather than from the installer's [Icons]: this script
+# is also the whole of a checkout install, and one owner means the two kinds of
+# install put the same shortcut in the same place with the same tooltip.
+function New-AppShortcut($path) {
+    try {
+        $wscript = New-Object -ComObject WScript.Shell
+        $link = $wscript.CreateShortcut($path)
+        $link.TargetPath       = $GuiCommand
+        $link.Arguments        = $GuiArguments
+        $link.WorkingDirectory = $PSScriptRoot
+        # No em-dash: the shortcut's Description travels through a COM interface
+        # that drops it to the ANSI codepage, and it shows up as "?" in the tooltip.
+        $link.Description      = "하루 마감 보고서 상태 확인과 진단"
+        $link.Save()
+        Ok "$path"
+    } catch {
+        Warn "바로 가기를 만들지 못했습니다: $($_.Exception.Message)"
+        Warn "직접 실행: $GuiCommand $GuiArguments"
+    }
 }
+New-AppShortcut (Join-Path ([Environment]::GetFolderPath('Programs')) "하루 마감 보고서.lnk")
+New-AppShortcut (Join-Path ([Environment]::GetFolderPath('Desktop')) "하루 마감 보고서.lnk")
 
 # ------------------------------------------------------------------- skill ---
 Step "9/9  Claude Code 스킬"

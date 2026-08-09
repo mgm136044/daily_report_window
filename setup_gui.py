@@ -35,6 +35,9 @@ import paths           # noqa: E402
 import platform_support  # noqa: E402
 
 POLL_MS = 100
+# Long enough to read the last lines the installer printed, short enough that
+# nobody wonders whether the window is stuck.
+CLOSE_DELAY_MS = 2500
 # Written, so it follows the data root; the example it is built from ships with
 # the tool and follows the resource root.
 ENV_PATH = paths.data(".env")
@@ -250,13 +253,34 @@ def build(root, tk, ttk, scrolledtext):
     output.configure(state="disabled")
 
     lines: queue.Queue = queue.Queue()
-    busy = {"running": False}
+    busy = {"running": False, "code": None, "what": ""}
 
     def emit(text):
         output.configure(state="normal")
         output.insert("end", text + "\n")
         output.see("end")
         output.configure(state="disabled")
+
+    def open_status_window():
+        """Hand over to the window they will use from now on.
+
+        Frozen, `sys.executable` is the GUI itself and `gui.main()` routes a
+        configured install to the status window — which is what setup has just
+        made this into.
+        """
+        if paths.bundled():
+            argv = [os.path.abspath(sys.executable)]
+        else:
+            argv = [sys.executable, "-X", "utf8", paths.resource("status_window.py")]
+        try:
+            subprocess.Popen(argv, cwd=paths.data_root(),
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except OSError:
+            pass          # the shortcut on the desktop is the other way in
+
+    def finish():
+        open_status_window()
+        root.destroy()
 
     def drain():
         while True:
@@ -267,6 +291,16 @@ def build(root, tk, ttk, scrolledtext):
             if item is None:
                 busy["running"] = False
                 install_button.state(["!disabled"])
+                # Close on success only.
+                #
+                # A wizard that stays open after it worked leaves the person
+                # deciding whether it did; one that closes after it failed
+                # takes the error away with it. The exit code is the only thing
+                # that knows which happened, so it decides.
+                if busy.get("code") == 0 and busy.get("what") == "install.ps1":
+                    emit("")
+                    emit("설치가 끝났습니다. 잠시 후 이 창을 닫고 상태 창을 엽니다.")
+                    root.after(CLOSE_DELAY_MS, finish)
             else:
                 emit(item)
         root.after(POLL_MS, drain)
@@ -275,6 +309,7 @@ def build(root, tk, ttk, scrolledtext):
         if busy["running"]:
             return
         busy["running"] = True
+        busy["code"], busy["what"] = None, title
         install_button.state(["disabled"])
         lines.put(f"$ {title}")
 
@@ -287,6 +322,7 @@ def build(root, tk, ttk, scrolledtext):
                 for line in process.stdout:
                     lines.put(line.rstrip())
                 process.wait()
+                busy["code"] = process.returncode
                 lines.put(f"— 종료 코드 {process.returncode}")
             except OSError as error:
                 lines.put(f"실행 실패: {error}")

@@ -133,10 +133,13 @@ def remove_installation(argv: list[str] | None = None) -> int:
         "$task = Get-ScheduledTask -TaskName $label;"
         "if ($task) { Unregister-ScheduledTask -TaskName $label -Confirm:$false;"
         "  Write-Host \"작업 제거: $label\" } else { Write-Host '등록된 작업 없음' };"
-        "$link = Join-Path ([Environment]::GetFolderPath('Programs')) "
+        # Both shortcuts, because install.ps1 makes both. One left behind
+        # points at an executable that is gone.
+        "foreach ($folder in @('Programs','Desktop')) {"
+        "  $link = Join-Path ([Environment]::GetFolderPath($folder)) "
         "'하루 마감 보고서.lnk';"
-        "if (Test-Path $link) { Remove-Item $link -Force; "
-        "  Write-Host '바로 가기 제거' }"
+        "  if (Test-Path $link) { Remove-Item $link -Force; "
+        "    Write-Host \"바로 가기 제거: $folder\" } }"
     )
     import base64
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")

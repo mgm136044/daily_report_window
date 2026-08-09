@@ -1909,21 +1909,41 @@ def test_exclusion_fragments_expand_environment_variables(configured, home):
             os.environ[variable] = original
         config._fragments.cache_clear()
 
-def test_the_windows_example_has_no_dead_exclusion_entry():
-    """Every rooted entry in the shipped example must be one `_fragments` can
-    actually resolve — a rule that matches nothing is worse than none, because
-    the list reads as covering something it does not."""
+def test_the_examples_environment_variables_expand_when_they_are_defined():
+    """The shipped Windows example puts `%OneDrive%/` in walk_exclude, and
+    `_fragments` never expanded anything, so it matched nothing.
+
+    What is asserted is that the *mechanism* runs — not that every variable
+    is set on the machine running the tests. `%OneDrive%` exists only where
+    OneDrive does; on a CI runner it is undefined and staying literal is the
+    correct outcome, since there is no such folder to exclude. The first
+    version of this test demanded expansion unconditionally, passed here, and
+    failed on all five runners — the exact mistake this suite exists to catch,
+    made while adding a test to it.
+    """
     import tomllib
     with open(os.path.join(ROOT, "config.windows.example.toml"), "rb") as handle:
         parsed = tomllib.load(handle)
     entries = (parsed["exclude"]["paths"]
                + parsed["sources"].get("walk_exclude", []))
-    for entry in entries:
-        if "%" not in entry:
-            continue
-        expanded = config.expand(entry)
-        assert "%" not in expanded, \
-            f"확장되지 않는 환경변수가 남아 있다: {entry} -> {expanded}"
+    named = [e for e in entries if "%" in e]
+    assert named, "예시에 환경변수 항목이 하나도 없다 — 테스트 전제가 사라졌다"
+
+    for entry in named:
+        variable = entry.split("%")[1]
+        original = os.environ.get(variable)
+        try:
+            os.environ[variable] = os.path.join(
+                "C:" + os.sep if WINDOWS else "/", "synthetic", variable.lower())
+            expanded = config.expand(entry)
+            assert "%" not in expanded, \
+                f"정의돼 있는데도 확장되지 않는다: {entry} -> {expanded}"
+            assert "synthetic" in expanded
+        finally:
+            if original is None:
+                os.environ.pop(variable, None)
+            else:
+                os.environ[variable] = original
 
 
 # --- 새 설정이 기존 설치에 도달하는가 --------------------------------------

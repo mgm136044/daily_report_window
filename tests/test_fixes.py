@@ -1741,6 +1741,28 @@ def test_purge_refuses_to_run_from_a_checkout():
     assert 'purge = "--purge" in' in source
     assert "return remove_installation(argv)" in source
 
+def test_the_installer_script_has_no_stray_section_tag():
+    """ISCC reads any line whose first non-blank characters are `[...]` as a
+    section tag — including inside a `{ }` Pascal comment, because the
+    preprocessor is line-oriented and runs before anything understands Pascal.
+
+    A comment explaining the uninstall-run behaviour happened to wrap with
+    `[UninstallRun]` at the start of a line, and the build failed with
+    "Invalid section tag" pointing at prose. CI catches it, two minutes later;
+    this catches it now.
+    """
+    import re as _re
+    known = {"Setup", "Types", "Components", "Tasks", "Dirs", "Files", "Icons",
+             "INI", "InstallDelete", "Languages", "Messages", "CustomMessages",
+             "LangOptions", "Registry", "Run", "UninstallDelete",
+             "UninstallRun", "Code"}
+    script = open(os.path.join(ROOT, "installer.iss"), encoding="utf-8-sig").read()
+    for number, line in enumerate(script.splitlines(), 1):
+        match = _re.match(r"\s*\[([^\]]*)\]", line)
+        if match:
+            assert match.group(1) in known, \
+                f"{number}행이 섹션 태그로 읽힌다: {line.strip()}"
+
 @windows_only
 def test_the_uninstaller_asks_before_keeping_the_token():
     """Keeping the data was always deliberate — a reinstall then keeps its

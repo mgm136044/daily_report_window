@@ -81,10 +81,10 @@ end;
 
 { Ask about the data at uninstall time, and only then.
 
-  This started as two [UninstallRun] entries chosen by `Check: ShouldPurge`.
-  That does not work, and the way it fails is quiet: **Inno evaluates Check on
-  [UninstallRun] while it is writing the uninstall log, which is during
-  installation.** So the question appeared when the program was being
+  This started as two run entries chosen by `Check: ShouldPurge`. That does
+  not work, and the way it fails is quiet: **Inno evaluates Check on an
+  uninstall-run entry while it is writing the uninstall log, which happens
+  during installation.** So the question appeared when the program was being
   *installed*, asking about a removal that had not happened, and whichever
   answer it got was baked into the log. Uninstalling then asked nothing and
   ran whatever had been recorded — reported as "데이터까지 지운다고 체크했는데

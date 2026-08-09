@@ -1749,13 +1749,28 @@ def test_the_uninstaller_asks_before_keeping_the_token():
     prompts, and the command that says "설정과 기록은 남겨 둡니다" runs hidden,
     so that sentence has never been read by anyone."""
     script = open(os.path.join(ROOT, "installer.iss"), encoding="utf-8-sig").read()
-    assert "function ShouldPurge" in script
-    assert 'Parameters: "uninstall --purge"' in script
-    assert 'Check: ShouldPurge' in script and 'Check: not ShouldPurge' in script
-    # asked once, or the question appears twice — Check: runs per entry
-    assert "PurgeAsked" in script
+
+    # Asked from uninstall-time code, never from a Check: on [UninstallRun].
+    #
+    # Inno evaluates Check on those entries while writing the uninstall log,
+    # which happens during *installation* — so the first version of this asked
+    # the question when the program was being installed and then ran whatever
+    # had been recorded, silently. Reported as "데이터까지 지운다고 체크했는데
+    # 설정이 그대로 남아 있다".
+    assert "procedure CurUninstallStepChanged" in script
+    assert "usUninstall" in script
+    assert "uninstall --purge" in script
+    for line in script.splitlines():
+        if "Filename:" in line:
+            assert "Check:" not in line, \
+                f"제거/실행 항목에 Check: 를 걸었다 — 설치 시점에 평가된다: {line.strip()}"
+
+    # nobody to ask during a silent uninstall, and only one answer is reversible
+    assert "UninstallSilent" in script
     # keeping data is recoverable and deleting it is not, so No is the default
     assert "MB_DEFBUTTON2" in script
+    # a failed purge has to say so rather than leaving the token behind quietly
+    assert "지우지 못했습니다" in script
     # and it says what would actually go
     for named in (".env", "config.toml", "프롬프트 원문"):
         assert named in script, f"제거 안내에 {named} 가 없다"

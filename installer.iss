@@ -67,37 +67,44 @@ Filename: "{app}\{#GuiExe}"; Description: "설정 마법사 열기"; \
 ; longer exists. It does not stop — it fires at 04:05 every night, fails to
 ; start, and records the failure, forever, in a place nobody thinks to look.
 ;
-; Two entries, one of which runs, chosen by what the person answers below.
-Filename: "{app}\{#AppExe}"; Parameters: "uninstall"; Check: not ShouldPurge; \
+; One entry, unconditional. The question about data is asked from [Code]
+; below, at uninstall time — see CurUninstallStepChanged for why it cannot be
+; a Check: on a second entry here.
+Filename: "{app}\{#AppExe}"; Parameters: "uninstall"; \
           Flags: runhidden waituntilterminated; RunOnceId: "RemoveScheduledTask"
-Filename: "{app}\{#AppExe}"; Parameters: "uninstall --purge"; Check: ShouldPurge; \
-          Flags: runhidden waituntilterminated; RunOnceId: "RemoveScheduledTaskAndData"
 
 [Code]
-var
-  PurgeAsked: Boolean;
-  PurgeChosen: Boolean;
-
 function InitializeSetup(): Boolean;
 begin
   Result := True;
 end;
 
-{ Uninstalling has always kept the data directory, deliberately, so that a
-  reinstall keeps its Notion database instead of creating a second one. What
-  was missing is that nobody was told: `.env` holds a live Notion token and
-  `work/` holds verbatim prompts, and both survived a Control Panel uninstall
-  with no notice. The command that says "설정과 기록은 남겨 둡니다" runs hidden,
-  so that sentence has never been read by anyone.
+{ Ask about the data at uninstall time, and only then.
 
-  Asked once and cached, because Check: is evaluated for each entry and a
-  question asked twice reads as a bug. Defaults to No — keeping data is
-  recoverable, deleting it is not. }
-function ShouldPurge(): Boolean;
+  This started as two [UninstallRun] entries chosen by `Check: ShouldPurge`.
+  That does not work, and the way it fails is quiet: **Inno evaluates Check on
+  [UninstallRun] while it is writing the uninstall log, which is during
+  installation.** So the question appeared when the program was being
+  *installed*, asking about a removal that had not happened, and whichever
+  answer it got was baked into the log. Uninstalling then asked nothing and
+  ran whatever had been recorded — reported as "데이터까지 지운다고 체크했는데
+  설정이 그대로 남아 있다", which is exactly what it would do.
+
+  CurUninstallStepChanged is the documented place for uninstall-time logic.
+  usUninstall runs before the files are deleted, so the executable that does
+  the work is still there.
+
+  Silent uninstalls keep the data. There is nobody to ask, and of the two
+  answers only one is reversible. }
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
 begin
-  if not PurgeAsked then begin
-    PurgeAsked := True;
-    PurgeChosen := MsgBox(
+  if CurUninstallStep <> usUninstall then
+    Exit;
+  if UninstallSilent then
+    Exit;
+  if MsgBox(
       '설정과 기록도 함께 삭제할까요?' + #13#10 + #13#10 +
       '삭제하면 다음이 사라집니다:' + #13#10 +
       '    · Notion 연결 토큰 (.env)' + #13#10 +
@@ -106,7 +113,14 @@ begin
       '      (수집 산출물에는 프롬프트 원문이 들어 있습니다)' + #13#10 + #13#10 +
       '[아니요] 를 고르면 그대로 남습니다. 다시 설치하면 기존 Notion' + #13#10 +
       '데이터베이스를 이어서 쓰고, 설정을 다시 하지 않아도 됩니다.',
-      mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES;
+      mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
+  begin
+    Exec(ExpandConstant('{app}\{#AppExe}'), 'uninstall --purge', '',
+         SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    if ResultCode <> 0 then
+      MsgBox('설정과 기록을 지우지 못했습니다 (종료 코드 ' + IntToStr(ResultCode) + ').' + #13#10 +
+             '직접 지우려면 이 폴더를 삭제하세요:' + #13#10 +
+             ExpandConstant('{localappdata}\daily-report'),
+             mbError, MB_OK);
   end;
-  Result := PurgeChosen;
 end;

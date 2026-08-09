@@ -1741,6 +1741,113 @@ def test_purge_refuses_to_run_from_a_checkout():
     assert 'purge = "--purge" in' in source
     assert "return remove_installation(argv)" in source
 
+# --- 새 설정이 기존 설치에 도달하는가 --------------------------------------
+
+def _strip_keys(text: str, keys) -> str:
+    """An older config: the same file before those settings existed."""
+    import re as _re
+    for key in keys:
+        text = _re.sub(rf"(?m)^{key}\s*=.*\n", "", text)
+    return text
+
+def test_settings_added_in_a_later_version_reach_an_existing_install():
+    """The installer leaves an existing config.toml alone, which is right —
+    it is the user's file — and taken literally it meant a setting introduced
+    later reached nobody who had already installed.
+
+    `[summary] engine` shipped in 0.2.0 and `[run] schedule_time` in 0.2.2. An
+    install predating them had neither, so both features were invisible to
+    exactly the people who had been using the tool longest. Reported as "다른
+    사용자들도 쓰려면 범용적인 설정이 필요한데 나한테만 맞춰지는 것 아니냐".
+    """
+    import tomllib
+    new = ("engine", "codex_bin", "codex_model", "schedule_time")
+    for name in ("config.example.toml", "config.windows.example.toml"):
+        example = open(os.path.join(ROOT, name), encoding="utf-8").read()
+        old = _strip_keys(example, new)
+        assert old != example, f"{name}: 합성할 구버전이 만들어지지 않았다"
+
+        merged, added = config.merge_missing_keys(old, example)
+        assert {a.split(".")[-1] for a in added} == set(new), f"{name}: {added}"
+
+        before, after = tomllib.loads(old), tomllib.loads(merged)
+        assert after["summary"]["engine"] == "claude"
+        assert after["run"]["schedule_time"] == "04:05"
+
+        # every default equals the behaviour the install already had, so
+        # writing them down changes nothing — it only makes them visible
+        for section, values in before.items():
+            if isinstance(values, dict):
+                for key, value in values.items():
+                    assert after[section][key] == value, f"{name}: {section}.{key} 가 바뀌었다"
+
+        # the sentence that explains a setting comes with it
+        position = merged.index("schedule_time =")
+        assert "#" in merged[max(0, position - 400):position], "주석 없이 키만 들어갔다"
+
+def test_carrying_settings_over_is_idempotent():
+    """The installer runs it on every upgrade, so a second pass must add
+    nothing rather than a second copy of everything."""
+    example = open(os.path.join(ROOT, "config.windows.example.toml"),
+                   encoding="utf-8").read()
+    old = _strip_keys(example, ("engine", "schedule_time"))
+    once, added = config.merge_missing_keys(old, example)
+    assert added
+    twice, again = config.merge_missing_keys(once, example)
+    assert again == [], f"두 번째 실행이 또 넣었다: {again}"
+    assert twice == once
+
+def test_repeated_sections_are_left_alone():
+    """`[[sources.extra_session_globs]]` is a list of entries, not a set of
+    settings — "the same key in the same section" identifies nothing there, so
+    merging into it would duplicate somebody's list."""
+    example = open(os.path.join(ROOT, "config.windows.example.toml"),
+                   encoding="utf-8").read()
+    assert "[[sources.extra_session_globs]]" in example, "테스트 전제가 사라졌다"
+    sparse = "[day]\nboundary_hour = 4\n"
+    merged, added = config.merge_missing_keys(sparse, example)
+    assert not any("extra_session_globs" in a for a in added), added
+    assert "[[sources.extra_session_globs]]" not in merged
+
+def test_a_config_upgrade_keeps_the_original_and_refuses_bad_output():
+    """This is the one file the tool cannot regenerate — the Notion database
+    id lives beside it and the exclusion lists are tuned to one machine."""
+    import tomllib
+    example_path = os.path.join(ROOT, "config.windows.example.toml")
+    example = open(example_path, encoding="utf-8").read()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = os.path.join(tmp, "config.toml")
+        original = _strip_keys(example, ("engine", "schedule_time"))
+        with open(target, "w", encoding="utf-8") as handle:
+            handle.write(original)
+
+        added, message = config.upgrade_file(target, example_path)
+        assert added and "추가" in message
+        assert os.path.exists(target + ".bak"), "원본을 남기지 않았다"
+        assert open(target + ".bak", encoding="utf-8").read() == original
+        tomllib.loads(open(target, encoding="utf-8").read())
+
+        # nothing left to do the second time
+        added, _ = config.upgrade_file(target, example_path)
+        assert added == []
+
+def test_doctor_and_the_cli_expose_it():
+    """A migration nobody is told about is one nobody runs."""
+    doctor_source = open(os.path.join(ROOT, "doctor.py"), encoding="utf-8").read()
+    assert "check_config_currency" in doctor_source
+    assert "config.missing_keys()" in doctor_source
+    assert "check_config_currency()" in doctor_source.split("def main")[1]
+
+    cli_source = open(os.path.join(ROOT, "cli.py"), encoding="utf-8").read()
+    assert "config-upgrade" in cli_source.split("COMMANDS = ")[1].split(")")[0]
+    assert "config.upgrade_file()" in cli_source
+
+@windows_only
+def test_the_installer_carries_settings_over_on_an_upgrade():
+    script = open(os.path.join(ROOT, "install.ps1"), encoding="utf-8-sig").read()
+    branch = script.split("if (Test-Path $ConfigPath) {")[1].split("} else {")[0]
+    assert "config-upgrade" in branch, "업그레이드가 새 설정을 옮기지 않는다"
+
 def test_the_installer_script_has_no_stray_section_tag():
     """ISCC reads any line whose first non-blank characters are `[...]` as a
     section tag — including inside a `{ }` Pascal comment, because the

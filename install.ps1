@@ -212,7 +212,24 @@ if ($claudeBin) {
 # ------------------------------------------------------------------ config ---
 Step "4/9  config.toml"
 if (Test-Path $ConfigPath) {
-    Ok "이미 있음 — 건드리지 않습니다"
+    Ok "이미 있음 — 값은 건드리지 않습니다"
+    # Carry over settings added since this config was written.
+    #
+    # Leaving the file alone is right — it is the user's — but taken literally
+    # it means a setting introduced in a later version reaches nobody who
+    # already installed. `[summary] engine` shipped in 0.2.0 and
+    # `[run] schedule_time` in 0.2.2, and an install predating them had
+    # neither: the features existed and were invisible to exactly the people
+    # who had been using the tool longest.
+    #
+    # Additive only, and every default equals the behaviour this install
+    # already had, so nothing changes by being written down. It only becomes
+    # visible and editable. The command keeps a .bak and refuses to write
+    # anything that does not parse.
+    if ($AppExe) {
+        $upgrade = & $AppExe config-upgrade 2>&1
+        foreach ($line in $upgrade) { if ("$line".Trim()) { Ok "$line".Trim() } }
+    }
 } else {
     $language = Ask '보고서 언어 (ko/en)' 'ko' $Language
     if ($language -ne 'ko' -and $language -ne 'en') { $language = 'ko' }

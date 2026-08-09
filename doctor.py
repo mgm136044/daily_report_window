@@ -254,6 +254,31 @@ def check_tooling() -> None:
                f"config.toml 의 [summary] {setting} 에 전체 경로를 넣으세요.")
 
 
+def check_config_currency() -> None:
+    """Settings this version offers that this install has never been shown.
+
+    The installer leaves an existing config.toml alone, correctly — it is the
+    user's file. The cost is that a setting added in a later version reaches
+    nobody who already installed: `[summary] engine` shipped in 0.2.0 and
+    `[run] schedule_time` in 0.2.2, and an install predating them had neither,
+    so both features were invisible to the people using the tool longest.
+    """
+    if config.using_example():
+        return
+    try:
+        missing = config.missing_keys()
+    except OSError as error:
+        report(WARN, "설정 최신성", f"확인하지 못했습니다: {error}")
+        return
+    if not missing:
+        report(OK, "설정 최신성", "새 설정 항목 없음")
+        return
+    report(WARN, "설정 최신성",
+           f"이 버전에 생긴 설정 {len(missing)}개가 config.toml 에 없습니다:\n"
+           f"     {', '.join(missing)}\n"
+           f"     추가: daily-report config-upgrade  (기존 값은 그대로 둡니다)")
+
+
 def check_auth() -> None:
     try:
         which = summarize.engine()
@@ -383,6 +408,7 @@ def main() -> int:
 
     check_scheduler()
     check_config()
+    check_config_currency()
     check_tooling()
     check_last_run()
     check_stale_lock()

@@ -7,6 +7,7 @@ without touching logic.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import tomllib
 import unicodedata
@@ -64,6 +65,190 @@ def using_example() -> bool:
 def load() -> dict:
     with open(source_path(), "rb") as handle:
         return tomllib.load(handle)
+
+
+# --- carrying new settings into an existing config ---------------------------
+#
+# The installer leaves an existing config.toml alone, which is right: it
+# describes somebody's machine and their choices, and an upgrade has no
+# business overwriting either. The cost is that a setting added in a new
+# version never reaches anyone who already installed — `[summary] engine`
+# shipped in 0.2.0 and `[run] schedule_time` in 0.2.2, and an install from
+# before then has neither, so both features are invisible to exactly the people
+# who have been using the tool longest.
+#
+# So the missing keys are carried over instead: added, with the comment that
+# explains them, and never replacing anything already there. Every default
+# equals the behaviour that install already had, so nothing changes by being
+# written down — it only becomes visible and editable.
+
+def _bracket_delta(line: str) -> int:
+    """Net bracket depth of a line, ignoring brackets inside strings."""
+    depth = quote = 0
+    previous = ""
+    for char in line:
+        if quote:
+            if char == quote and previous != "\\":
+                quote = 0
+        elif char in "\"'":
+            quote = char
+        elif char == "#":
+            break
+        elif char in "[{":
+            depth += 1
+        elif char in "]}":
+            depth -= 1
+        previous = char
+    return depth
+
+
+def _entries(text: str) -> list[tuple[str, str, list[str]]]:
+    """Every key the file declares, as (section, key, lines to reproduce it).
+
+    The lines include the comment directly above the key. A setting arriving
+    without the sentence that explains it is a setting nobody edits on purpose,
+    and these files are meant to be read.
+
+    Array-of-tables sections are skipped. `[[sources.extra_session_globs]]` is
+    a list of entries rather than a set of settings, so "the same key in the
+    same section" does not identify anything and merging into it is meaningless.
+    """
+    entries: list[tuple[str, str, list[str]]] = []
+    lines = text.splitlines()
+    section, pending, index = "", [], 0
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            pending.append(line)
+            index += 1
+            continue
+        header = re.match(r"\[(\[?)([^\]]+)\]\]?\s*$", stripped)
+        if header:
+            section = "" if header.group(1) else header.group(2)
+            pending = []
+            index += 1
+            continue
+        name = re.match(r"([A-Za-z0-9_\-]+|\"[^\"]+\")\s*=", stripped)
+        if not name or not section:
+            pending = []
+            index += 1
+            continue
+        comment: list[str] = []
+        for previous in reversed(pending):
+            if previous.strip().startswith("#"):
+                comment.insert(0, previous)
+            else:
+                break
+        pending = []
+        start, depth = index, _bracket_delta(line)
+        while depth > 0 and index + 1 < len(lines):
+            index += 1
+            depth += _bracket_delta(lines[index])
+        entries.append((section, name.group(1).strip('"'),
+                        comment + lines[start:index + 1]))
+        index += 1
+    return entries
+
+
+def _insert(lines: list[str], section: str, block: list[str]) -> list[str]:
+    """Put `block` at the end of `section`, creating the section if needed."""
+    start = None
+    for index, line in enumerate(lines):
+        if line.strip() == f"[{section}]":
+            start = index
+            break
+    if start is None:
+        return lines + ([""] if lines and lines[-1].strip() else []) \
+            + [f"[{section}]"] + block
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        if re.match(r"\[\[?[^\]]+\]\]?\s*$", lines[index].strip()):
+            end = index
+            break
+    while end > start + 1 and not lines[end - 1].strip():
+        end -= 1
+    return lines[:end] + [""] + block + lines[end:]
+
+
+def merge_missing_keys(config_text: str, example_text: str) -> tuple[str, list[str]]:
+    """Add the settings the example declares and this config does not.
+
+    Insertion only. Existing values, comments, ordering and whitespace come
+    through untouched — an upgrade that rewrote what somebody had chosen would
+    be worse than one that added nothing.
+    """
+    present = {(s, k) for s, k, _ in _entries(config_text)}
+    lines, added = config_text.splitlines(), []
+    for section, key, block in _entries(example_text):
+        if (section, key) in present:
+            continue
+        lines = _insert(lines, section, block)
+        present.add((section, key))
+        added.append(f"{section}.{key}")
+    text = "\n".join(lines)
+    if config_text.endswith("\n") or not config_text:
+        text += "\n"
+    return text, added
+
+
+def missing_keys(config_path: str = "", example_path: str = "") -> list[str]:
+    """Which settings this install has never been offered. Read-only."""
+    config_path = config_path or CONFIG_PATH
+    example_path = example_path or EXAMPLE_PATH
+    if not os.path.exists(config_path):
+        return []
+    # A fresh clone runs on the example itself, which is never behind itself.
+    if os.path.abspath(config_path) == os.path.abspath(example_path):
+        return []
+    with open(config_path, encoding="utf-8") as handle:
+        current = handle.read()
+    with open(example_path, encoding="utf-8") as handle:
+        example = handle.read()
+    return merge_missing_keys(current, example)[1]
+
+
+def upgrade_file(config_path: str = "", example_path: str = "") -> tuple[list[str], str]:
+    """Write the missing settings into config.toml. Returns (added, message).
+
+    Fails closed. The merged text has to parse as TOML before it replaces
+    anything, and the original is kept beside it as `.bak` — this is the one
+    file the tool cannot regenerate, since the Notion database id lives next to
+    it and the exclusion lists are hand-tuned against a particular machine.
+    """
+    config_path = config_path or CONFIG_PATH
+    example_path = example_path or EXAMPLE_PATH
+    if not os.path.exists(config_path):
+        return [], f"config.toml 이 없습니다: {config_path}"
+    if os.path.abspath(config_path) == os.path.abspath(example_path):
+        return [], "예시 설정으로 동작 중이라 옮길 것이 없습니다"
+
+    with open(config_path, encoding="utf-8") as handle:
+        current = handle.read()
+    with open(example_path, encoding="utf-8") as handle:
+        example = handle.read()
+    merged, added = merge_missing_keys(current, example)
+    if not added:
+        return [], "새로 추가할 설정이 없습니다"
+
+    try:
+        tomllib.loads(merged)
+    except tomllib.TOMLDecodeError as error:
+        return [], (f"병합 결과가 TOML 로 읽히지 않아 중단했습니다: {error}\n"
+                    f"  설정은 그대로 두었습니다: {config_path}")
+
+    backup = config_path + ".bak"
+    with open(backup, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(current)
+    with open(config_path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(merged)
+    # Imported here rather than at module level: `config` is the one module
+    # everything else imports first, and it has no other reason to pull the
+    # platform layer in behind it.
+    import platform_support  # noqa: PLC0415
+    for path in (config_path, backup):
+        platform_support.PLATFORM.restrict(path, is_dir=False)
+    return added, f"설정 {len(added)}개를 추가했습니다 (원본: {backup})"
 
 
 def expand(path: str) -> str:

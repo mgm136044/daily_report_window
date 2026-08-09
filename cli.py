@@ -26,7 +26,7 @@ import platform_support
 platform_support.PLATFORM.configure_stdio()
 
 COMMANDS = ("run", "doctor", "collect", "summarize", "setup-db",
-            "install", "uninstall")
+            "install", "uninstall", "config-upgrade")
 
 USAGE = """사용법: daily-report [명령] [인자…]
 
@@ -36,6 +36,8 @@ USAGE = """사용법: daily-report [명령] [인자…]
   uninstall [--purge]  예약 작업·바로 가기 제거 (제거기가 부른다)
                      --purge 는 설정·자격증명·기록까지 지운다
   setup-db           노션 데이터베이스 생성 (설치 중 1회)
+  config-upgrade     새 버전에서 생긴 설정 항목을 config.toml 에 추가
+                     (기존 값은 건드리지 않는다)
   collect YYYY-MM-DD [out.json]
   summarize <digest.json> <report.md> | --preflight
 """
@@ -236,6 +238,13 @@ def main() -> int:
         return run_installer(argv)
     if command == "uninstall":
         return remove_installation(argv)
+    if command == "config-upgrade":
+        import config
+        added, message = config.upgrade_file()
+        print(message)
+        for name in added:
+            print(f"  + {name}")
+        return 0
     print(USAGE, file=sys.stderr)
     return 2
 

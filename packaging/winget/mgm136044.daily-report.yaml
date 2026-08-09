@@ -22,7 +22,7 @@
 # would otherwise make it harder to install than `git clone`.
 
 PackageIdentifier: mgm136044.daily-report
-PackageVersion: 0.2.4
+PackageVersion: 0.2.5
 DefaultLocale: ko-KR
 ManifestType: version
 ManifestVersion: 1.6.0

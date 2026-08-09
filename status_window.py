@@ -92,6 +92,32 @@ def _last_that_ran(completed: dict, today: str) -> str:
     return max(ran) if ran else today
 
 
+def validate_requested_day(answer: str, today: str) -> tuple[str, str]:
+    """Read a hand-typed date. Returns (day, "") or ("", why not).
+
+    Module level, and returning a message rather than showing one, because
+    this is the part worth testing — the widgets are not. `today` is the
+    *logical* day, which is still in progress: a report for it would be built
+    from an unfinished day and would read as a quiet one rather than an
+    incomplete one, which is indistinguishable afterwards.
+    """
+    answer = (answer or "").strip()
+    if not answer:
+        return "", "날짜를 넣어 주세요."
+    try:
+        day = datetime.strptime(answer, "%Y-%m-%d").strftime("%Y-%m-%d")
+    except ValueError:
+        return "", f"날짜로 읽을 수 없습니다: {answer}\n\nYYYY-MM-DD 형식으로 넣어 주세요."
+    if day >= today:
+        boundary = config.load()["day"]["boundary_hour"]
+        yesterday = (datetime.strptime(today, "%Y-%m-%d")
+                     - timedelta(days=1)).strftime("%Y-%m-%d")
+        return "", (f"{day} 은 아직 끝나지 않은 하루입니다.\n\n"
+                    f"하루 경계가 {boundary:02d}:00 이라 지금 진행 중인 날짜는 {today} 이고,\n"
+                    f"마감된 가장 최근 날짜는 {yesterday} 입니다.")
+    return day, ""
+
+
 def notion_url() -> str:
     """The database this install writes to, or "" if it is not configured."""
     try:
@@ -114,7 +140,7 @@ def open_in_file_manager(path: str) -> None:
 
 # --------------------------------------------------------------------- UI ---
 
-def build(root, tk, ttk, scrolledtext):
+def build(root, tk, ttk, scrolledtext, simpledialog, messagebox):
     """Assemble the window. Kept in a function so importing this module for
     its logic never touches a display."""
 
@@ -181,6 +207,7 @@ def build(root, tk, ttk, scrolledtext):
     output.configure(state="disabled")
 
     lines: queue.Queue = queue.Queue()
+    scheduler_result: queue.Queue = queue.Queue()
     running = {"busy": False}
 
     def emit(text):
@@ -201,6 +228,12 @@ def build(root, tk, ttk, scrolledtext):
                     button.state(["!disabled"])
             else:
                 emit(item)
+        # Same trip back to the main thread for the scheduler worker, which
+        # used to write its StringVar from the thread it ran on.
+        try:
+            scheduler_line.set(scheduler_result.get_nowait())
+        except queue.Empty:
+            pass
         root.after(POLL_MS, drain)
 
     def run_command(argv, title):
@@ -235,14 +268,38 @@ def build(root, tk, ttk, scrolledtext):
     bar.pack(fill="x", pady=(10, 0))
 
     yesterday = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    def run_argv(day: str) -> list[str]:
+        """How to ask this install to build one day's report."""
+        return (paths.command_argv("run", day) if paths.bundled()
+                else paths.command_argv("run_day", day))
+
+    def ask_for_a_date():
+        """Build any closed day, not only the most recent one.
+
+        The button beside this one is fixed to yesterday, which covers the
+        common case and answers nothing else — a day missed while the machine
+        was off, or one whose report was worth regenerating, had to be run
+        from a console with a path nobody has memorised. Notion is keyed by
+        date, so regenerating updates that day's row instead of adding one.
+        """
+        answer = simpledialog.askstring(
+            "보고서 생성", "생성할 날짜 (YYYY-MM-DD)",
+            initialvalue=yesterday, parent=root)
+        if answer is None:
+            return
+        day, problem = validate_requested_day(answer, today)
+        if problem:
+            messagebox.showerror("보고서 생성", problem, parent=root)
+            return
+        run_command(run_argv(day), f"run {day}")
+
     actions = [
         ("진단 실행",
          lambda: run_command(paths.command_argv("doctor"), "doctor")),
         (f"{yesterday} 다시 생성",
-         lambda: run_command(paths.command_argv("run_day", yesterday)
-                             if not paths.bundled()
-                             else paths.command_argv("run", yesterday),
-                             f"run {yesterday}")),
+         lambda: run_command(run_argv(yesterday), f"run {yesterday}")),
+        ("다른 날짜…", ask_for_a_date),
         ("로그 열기", lambda: open_in_file_manager(run_day.LOG_DIR)),
     ]
     url = notion_url()
@@ -256,16 +313,27 @@ def build(root, tk, ttk, scrolledtext):
         buttons.append(button)
 
     # --- scheduler status, off the main thread (it shells out to PowerShell) -
+    #
+    # The result goes back through a queue, for the reason stated 130 lines
+    # above and then not followed here: tkinter is not thread safe. This
+    # worker was calling `scheduler_line.set()` directly, and the panel came
+    # up **empty** — no status, not even the "조회 중…" it starts with. An
+    # empty box in the one panel that says whether anything is scheduled is
+    # the exact failure this window exists to prevent.
     def load_scheduler():
         if not label:
-            scheduler_line.set("config.toml 이 없어 작업 이름을 모릅니다")
+            scheduler_result.put("config.toml 이 없어 작업 이름을 모릅니다")
             return
         try:
             registered, detail = platform_support.PLATFORM.scheduler_status(label)
         except Exception as error:  # a diagnostic window must not die diagnosing
-            scheduler_line.set(f"조회 실패: {error}")
+            scheduler_result.put(f"조회 실패: {error}")
             return
-        scheduler_line.set(detail if registered else f"등록되어 있지 않습니다  ({label})")
+        # An empty detail would leave the panel blank and say nothing, so the
+        # absence is reported rather than rendered.
+        scheduler_result.put(
+            (detail.strip() or f"등록되어 있으나 상태를 읽지 못했습니다  ({label})")
+            if registered else f"등록되어 있지 않습니다  ({label})")
 
     threading.Thread(target=load_scheduler, daemon=True).start()
     root.after(POLL_MS, drain)
@@ -311,10 +379,10 @@ def main() -> int:
             pass
 
     import tkinter as tk
-    from tkinter import ttk, scrolledtext
+    from tkinter import messagebox, scrolledtext, simpledialog, ttk
 
     root = tk.Tk()
-    build(root, tk, ttk, scrolledtext)
+    build(root, tk, ttk, scrolledtext, simpledialog, messagebox)
     root.mainloop()
     return 0
 

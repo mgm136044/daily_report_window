@@ -80,6 +80,24 @@ def redirect_output() -> None:
     print(f"\n===== {datetime.now().isoformat(timespec='seconds')} =====")
 
 
+def say(message: str) -> None:
+    """Print progress that must never be able to abort the run.
+
+    Whoever is reading this output may stop reading. The status window runs
+    the job as a child and reads its stdout through a pipe; closing the window
+    closes the read end, and the next write raises. The report was already
+    published by then, so letting that exception out turned a finished day
+    into a recorded failure.
+
+    Only for lines that are commentary on work already done. Anything whose
+    failure should stop the run has no business going through here.
+    """
+    try:
+        print(message)
+    except OSError:
+        pass
+
+
 # Guarded on __main__ as well as the flag: doctor.py and the tests import this
 # module, and neither should have its output diverted because of whatever
 # happens to be on their own command line.
@@ -489,13 +507,6 @@ def main() -> int:
             try:
                 with Watchdog(watchdog_sec):
                     result = run_one(date_str, token, database_id)
-                if result.get("skipped"):
-                    print(f"{date_str}: 건너뜀 ({result['skipped']})")
-                else:
-                    print(f"{date_str}: 프로젝트 {result['projects']} · 세션 {result['sessions']} · "
-                          f"파일 {result['files']} · 커밋 {result['commits']} · "
-                          f"보고서 {result['report_chars']:,}자 · "
-                          f"살균 {result['digest_findings'] or '0건'}")
                 # Judged before the ledger gains today's entry, so the
                 # baseline is history rather than a set containing the day
                 # being judged.
@@ -507,6 +518,21 @@ def main() -> int:
                 }
                 write_state(state)
                 ok += 1
+                # Console output comes *after* the ledger, and never raises.
+                #
+                # The status window runs this as a child and reads its stdout
+                # through a pipe. Closing that window closes the read end, so
+                # the next write fails — and this line used to sit before the
+                # ledger write, inside the try. A day that had already
+                # published its report to Notion was therefore recorded as a
+                # failure and never entered the ledger, so it stayed
+                # outstanding forever while its row sat there marked done.
+                # Observed on the first real install, one minute after setup.
+                say(f"{date_str}: 건너뜀 ({result['skipped']})" if result.get("skipped")
+                    else (f"{date_str}: 프로젝트 {result['projects']} · 세션 {result['sessions']} · "
+                          f"파일 {result['files']} · 커밋 {result['commits']} · "
+                          f"보고서 {result['report_chars']:,}자 · "
+                          f"살균 {result['digest_findings'] or '0건'}"))
             except Exception as error:  # a failed day must not kill the rest
                 failed.append(date_str)
                 detail = f"{type(error).__name__}: {error}"

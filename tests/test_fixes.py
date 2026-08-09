@@ -1354,6 +1354,77 @@ def test_desktop_app_needs_no_extra_source():
 # Only the reading of the ledger is tested. The widgets are not: the failures
 # worth catching live in "which day counts as what", not in packing frames.
 
+def test_a_finished_day_is_recorded_even_when_nobody_is_reading():
+    """The status window reads the job's stdout through a pipe.
+
+    Closing the window closes the read end, so the job's next write raises.
+    That write was the per-day summary line, and it sat *before* the ledger
+    write inside the same `try` — so a day that had already published its
+    report to Notion was caught as a failure and never entered the ledger. It
+    stayed outstanding forever while its row sat there marked done.
+
+    Seen on the first real install: the row exists, created 03:09, status
+    완료, and `state/lastrun.json` was never created at all.
+    """
+    class Closed:
+        def write(self, _text):
+            raise BrokenPipeError(32, "broken pipe")
+
+        def flush(self):
+            raise BrokenPipeError(32, "broken pipe")
+
+    original = sys.stdout
+    sys.stdout = Closed()
+    try:
+        run_day.say("보고서 한 줄")     # must not raise
+    finally:
+        sys.stdout = original
+
+    # and the ledger must be written before anything is said about it
+    source = open(os.path.join(ROOT, "run_day.py"), encoding="utf-8").read()
+    body = source.split("for date_str in targets:")[1].split("except Exception")[0]
+    assert "write_state(state)" in body and "say(" in body
+    assert body.index("write_state(state)") < body.index("say("), \
+        "장부보다 콘솔 출력이 먼저다 — 파이프가 끊기면 완료된 날이 사라진다"
+
+def test_a_day_that_has_not_closed_yet_is_refused():
+    """The manual-date button builds any *closed* day.
+
+    The logical day is still in progress until the boundary hour, so a report
+    for it would be built from an unfinished day — and afterwards that is
+    indistinguishable from a quiet one.
+    """
+    import status_window as sw
+    today = "2026-08-08"
+
+    day, problem = sw.validate_requested_day(" 2026-08-07 ", today)
+    assert (day, problem) == ("2026-08-07", "")
+
+    for unfinished in (today, "2026-08-09"):
+        day, problem = sw.validate_requested_day(unfinished, today)
+        assert not day and "끝나지 않은" in problem, f"허용됨: {unfinished}"
+
+    for junk in ("", "   ", "어제", "2026/08/07", "20260807", "2026-13-01"):
+        day, problem = sw.validate_requested_day(junk, today)
+        assert not day and problem, f"거부되지 않음: {junk!r}"
+
+def test_the_scheduler_panel_is_filled_from_the_main_thread():
+    """It came up empty — no status, not even the "조회 중…" it starts with.
+
+    The worker set the StringVar from its own thread, which the same file
+    forbids 130 lines earlier for the other worker and routes through a queue
+    instead. An empty box in the one panel that says whether anything is
+    scheduled is the failure this window exists to prevent.
+    """
+    source = open(os.path.join(ROOT, "status_window.py"), encoding="utf-8").read()
+    worker = source.split("def load_scheduler")[1].split("threading.Thread")[0]
+    assert "scheduler_line.set(" not in worker, "작업 스레드가 위젯을 직접 건드린다"
+    assert "scheduler_result.put(" in worker
+    assert "scheduler_line.set(scheduler_result.get_nowait())" in source, \
+        "메인 스레드가 큐를 비우지 않는다"
+    # and a registered task with an unreadable detail must still say something
+    assert "상태를 읽지 못했습니다" in worker
+
 def test_status_summary_handles_an_empty_ledger():
     """A fresh install opens this window before anything has ever run."""
     import status_window as sw

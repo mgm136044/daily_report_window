@@ -25,7 +25,27 @@ RESOURCES = [
     # install.ps1 prints their paths at the token gate. Left out, the one
     # button that tells a new user how to get the Notion token — in the window
     # whose whole reason to exist is the token field — opened nothing.
-    ("docs", "docs"),
+    #
+    # Named one by one, never `("docs", "docs")`.
+    #
+    # That is what this used to say, and it collected the *directory*. In the
+    # public checkout the directory holds these four files and nothing else, so
+    # CI built a correct bundle and the mistake was invisible. In the private
+    # tree it holds twenty-eight, and the extra twenty-four are the development
+    # notes and the release plan — the files `export_public.py` refuses to
+    # publish, in its own words because they carry client names, project names
+    # and dates sentence by sentence.
+    #
+    # This spec's usage comment tells you to run `pyinstaller daily-report.spec`.
+    # Run that from the private tree and every one of those files goes into the
+    # installer, and from there onto the disk of everyone who installs it.
+    # Neither leak checker would notice: `check_binary_no_pii.py` looks only
+    # for identifiers belonging to the *build machine*, and `check_no_pii.py`
+    # was never pointed at `dist/`.
+    ("docs/design.md", "docs"),
+    ("docs/design.ko.md", "docs"),
+    ("docs/notion-setup.md", "docs"),
+    ("docs/notion-setup.ko.md", "docs"),
     ("config.example.toml", "."),
     ("config.windows.example.toml", "."),
     (".env.example", "."),

@@ -30,6 +30,11 @@ Description: |-
   수집 자체를 막을 수 있습니다.
 
   Notion 내부 연결 토큰과, 로그인된 Claude Code CLI 또는 Codex CLI 가 필요합니다.
+
+  제거 시 참고: `winget uninstall` 은 제거기를 무인으로 돌리므로 삭제 여부를
+  묻지 못하고 설정과 기록을 남깁니다 — Notion 토큰(.env)과 최대 14일치 수집
+  산출물이 포함됩니다. 함께 지우려면 제어판에서 제거하고 안내에 [예]를
+  고르거나, 제거 전에 `daily-report uninstall --purge` 를 실행하세요.
 Moniker: daily-report
 Tags:
   - notion

@@ -95,6 +95,39 @@ def test_the_marker_is_not_redacted_a_second_time():
         assert f"len{len(text)}" in cleaned, f"길이가 지워짐: {cleaned}"
 
 
+def test_the_marker_survives_a_key_in_front_of_it():
+    """The case the test above misses, and it is the common one.
+
+    A bare token came out clean, so spacing the marker's fields looked like it
+    had solved this — and `_mask`'s comment said so. `token: ntn_…` still
+    collapsed: the marker begins `<REDACTED`, nine characters with no space in
+    them, which `key_assignment` was happy to treat as a value. The result was
+    `token=<REDACTED> notion_token ntn_AA… len28>` — redacted twice, with the
+    kind and length dangling behind an unbalanced bracket.
+
+    `.env` files and shell history are almost entirely `KEY=value`, so this
+    was the shape the sanitizer met most often. Found by an independent audit,
+    not by this file.
+    """
+    secret = "ntn_abcdefghijklmnopqrstuvwx"
+    for line in [f"token: {secret}",
+                 f"NOTION_TOKEN={secret}",
+                 f'API_KEY="{secret}"',
+                 f"MY_SECRET = {secret}"]:
+        cleaned, found = sanitize.redact(line)
+        assert "notion_token" in found, f"미탐지: {line}"
+        assert secret not in cleaned
+        assert cleaned.count("<REDACTED") == 1, f"두 번 살균됨: {cleaned}"
+        assert cleaned.count("<") == cleaned.count(">"), f"괄호가 안 맞음: {cleaned}"
+        assert "notion_token" in cleaned and f"len{len(secret)}" in cleaned, \
+            f"진단 정보가 손상됨: {cleaned}"
+
+    # a value that is not a marker is still redacted, or the lookahead has
+    # switched the rule off
+    cleaned, found = sanitize.redact("PASSWORD=Hunter2Hunter2")
+    assert "key_assignment" in found and "Hunter2" not in cleaned
+
+
 def test_identity_matches_keep_no_recognisable_head():
     """The head that makes a credential finding actionable is, for an identity,
     the disclosure itself — a resident registration number's first six digits

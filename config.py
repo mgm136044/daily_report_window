@@ -355,6 +355,46 @@ def key(path: str) -> str:
     return os.path.normcase(path) if WINDOWS else path
 
 
+def canonical(path: str) -> str:
+    """One spelling for a location, so two names for it compare equal.
+
+    `exclude.paths` is the control this tool offers for confidential work —
+    the README calls it stronger than redaction, and it is the only thing that
+    keeps a directory out of the digest entirely. Substring matching on the
+    string as written honours that only for the spelling the person happened
+    to type.
+
+    Measured bypasses, all of which reached collection:
+
+      - a `..` segment: `~/x/../Confidential/f`
+      - a junction or symlink pointing at the excluded tree, which Windows
+        development setups and OneDrive's Known Folder Move both produce
+      - an 8.3 short name: `CONFID~1`
+      - a UNC form of a local drive: `\\\\localhost\\C$\\...`
+
+    `realpath` resolves all four — it follows links and junctions, collapses
+    `..`, and on Windows returns the long name. It touches the filesystem,
+    which is why the result is cached: `is_excluded` runs per record on files
+    numbering in the tens of thousands.
+
+    A path that does not exist cannot be resolved, and is left as written
+    rather than dropped. Collected records name files that have since been
+    deleted, and "unresolvable" must not quietly mean "not excluded".
+    """
+    if not path:
+        return path
+    try:
+        resolved = os.path.realpath(path)
+    except (OSError, ValueError):
+        resolved = path
+    return os.path.normpath(resolved)
+
+
+@lru_cache(maxsize=8192)
+def _canonical_cached(path: str) -> str:
+    return canonical(path)
+
+
 def probe(path: str) -> str:
     """A path prepared for substring matching against the exclusion lists.
 
@@ -366,7 +406,21 @@ def probe(path: str) -> str:
     """
     if not path:
         return "/"
-    text = path.replace(os.sep, "/") if WINDOWS else path
+    # The *directory* is resolved, not the whole path, and the basename is put
+    # back afterwards.
+    #
+    # Resolving each path in full is correct and far too slow: `realpath`
+    # touches the filesystem, every collected file is a different string, so
+    # the cache never hits. Measured on 50,000 paths — 9.1 seconds against
+    # 0.05 before, and this runs per record and per directory during the walk.
+    #
+    # Exclusion asks which tree something is in, which is a property of its
+    # directory, and directories repeat: the same 50,000 files come from a few
+    # hundred folders. A file that is *itself* a link into an excluded tree is
+    # not caught, but its directory is the thing the rules are written about.
+    head, tail = os.path.split(path)
+    text = os.path.join(_canonical_cached(head), tail) if head else path
+    text = text.replace(os.sep, "/")
     if WINDOWS:
         text = text.lower()
     return text if text.endswith("/") else text + "/"
@@ -383,13 +437,37 @@ def _fragments(raw: tuple[str, ...]) -> tuple[str, ...]:
     at all. The Windows defaults need entries for the home directory's legacy
     junctions, and those names (`Templates`, `Documents`, `Links`, `Recent`)
     are far too ordinary to match unanchored.
+
+    Environment variables are expanded too, through the same `expand()` the
+    rest of the configuration uses. They were not, and the shipped Windows
+    example carries `%OneDrive%/` in `walk_exclude` — an entry that matched
+    nothing, in the one list whose own comment explains that `%OneDrive%` is
+    the only dependable way to name a folder that may be called `OneDrive`,
+    `OneDrive - Contoso`, or a localized variant.
+
+    Anchored fragments are canonicalised as well, so a rule written against a
+    junction and a path arriving as the real location still meet.
     """
-    expanded = tuple(
-        (os.path.expanduser(f) if f.startswith("~") else f) for f in raw
-    )
+    prepared = []
+    for fragment in raw:
+        text = expand(fragment)
+        # Resolved only when the fragment names a place that is actually
+        # there. The lists mix two kinds of entry: locations (`~/clients`,
+        # `%OneDrive%/`) and *shapes* (`/node_modules/`, `/.git/`), which are
+        # substrings meant to match at any depth.
+        #
+        # `os.path.isabs` cannot tell them apart. On Windows it calls
+        # `/node_modules/` absolute — a leading slash is drive-relative there —
+        # so resolving on that test turned the shape into `C:\node_modules`
+        # and it stopped matching `C:\proj\node_modules\x` entirely. Existence
+        # is the honest test: a shape does not exist, a location does.
+        if os.path.isabs(text) and os.path.exists(text):
+            trailing = "/" if text.endswith(("/", "\\")) else ""
+            text = _canonical_cached(text) + trailing
+        prepared.append(text)
     if not WINDOWS:
-        return expanded
-    return tuple(f.replace("\\", "/").lower() for f in expanded)
+        return tuple(f.replace("\\", "/") for f in prepared)
+    return tuple(f.replace("\\", "/").lower() for f in prepared)
 
 
 def local_tz() -> timezone:

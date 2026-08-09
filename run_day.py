@@ -167,22 +167,58 @@ def write_state(state: dict) -> None:
     platform_support.PLATFORM.restrict(LASTRUN_PATH, is_dir=False)
 
 
+def summarizer_transcript_dirs() -> list[str]:
+    """Where Claude Code keeps the transcripts of our own summarization runs.
+
+    `summarize` runs `claude -p` from a scratch directory, and the comment
+    there explains that this puts the resulting transcript under an excluded
+    path so the job does not collect its own summarising. True, and it says
+    nothing about how long the file lives — which reads, in context, as though
+    it did.
+
+    That file is a second copy of the digest: prompts, shell commands and file
+    paths, verbatim, on disk. Measured on one install: ten files, 544 KB, the
+    oldest older than the `work/` retention window that exists for exactly
+    this material. Nothing pruned it and `--purge` did not remove it, because
+    both look only inside the data root and this lives in `~/.claude`.
+
+    Found by glob rather than by reproducing Claude Code's cwd-to-directory
+    encoding, which is its business and not a promise to us. Codex needs no
+    equivalent: `--ephemeral` means it writes nothing.
+    """
+    import glob as _glob
+
+    root = config.expand(config.load()["sources"].get("claude_projects_dir", ""))
+    if not root or not os.path.isdir(root):
+        return []
+    marker = os.path.basename(summarize.SCRATCH_DIR)
+    return [path for path in _glob.glob(os.path.join(root, f"*{marker}*"))
+            if os.path.isdir(path)]
+
+
 def prune_work_files(keep_days: int = WORK_RETENTION_DAYS) -> int:
     """Delete intermediate files older than the retention window.
 
     work/ grows about 1 MB a day and holds pre-sanitization prompt text, so it
-    is both a disk and a privacy concern if left forever.
+    is both a disk and a privacy concern if left forever. The summarizer's own
+    transcripts are the same material by another route and are pruned on the
+    same clock.
     """
     cutoff = time.time() - keep_days * 86400
     removed = 0
-    for name in os.listdir(WORK_DIR):
-        target = os.path.join(WORK_DIR, name)
+    for directory in [WORK_DIR, *summarizer_transcript_dirs()]:
         try:
-            if os.path.isfile(target) and os.path.getmtime(target) < cutoff:
-                os.unlink(target)
-                removed += 1
+            names = os.listdir(directory)
         except OSError:
             continue
+        for name in names:
+            target = os.path.join(directory, name)
+            try:
+                if os.path.isfile(target) and os.path.getmtime(target) < cutoff:
+                    os.unlink(target)
+                    removed += 1
+            except OSError:
+                continue
     return removed
 
 

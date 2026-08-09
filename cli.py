@@ -77,6 +77,18 @@ def purge_data() -> int:
               file=sys.stderr)
         return 1
     print(f"설정과 기록을 삭제했습니다: {root}")
+
+    # The summarizer's own transcripts live in `~/.claude`, not here, and are
+    # a verbatim second copy of every digest. The uninstaller's dialog promises
+    # to remove "수집 산출물" and they are exactly that.
+    import run_day
+    for directory in run_day.summarizer_transcript_dirs():
+        try:
+            shutil.rmtree(directory)
+            print(f"요약기 기록도 삭제했습니다: {directory}")
+        except OSError as error:
+            print(f"요약기 기록을 지우지 못했습니다: {error}\n"
+                  f"  직접 지우세요: {directory}", file=sys.stderr)
     return 0
 
 

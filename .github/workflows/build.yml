@@ -169,6 +169,35 @@ jobs:
       - name: Scan the frozen build for build-machine identifiers
         run: python -X utf8 scripts/check_binary_no_pii.py dist/daily-report
 
+      # A second scan, of the bundle's *text*, against the ordinary patterns.
+      #
+      # The one above only knows the identifiers of the machine it runs on —
+      # account name, home directory, hostname. That is the wrong question for
+      # a file copied in by mistake: a development note naming a client leaks
+      # nothing about the builder and everything about the work.
+      #
+      # `("docs", "docs")` in the spec collected a whole *directory*, which
+      # holds four files in the public checkout CI builds from and twenty-eight
+      # in the private tree a release could equally be built from. Nothing
+      # checked. This is the check.
+      #
+      # Scoped to the directories this project puts in the bundle. Scanning all
+      # of `_internal` also reads Tcl/Tk's own sources, which tkinter brings
+      # along and which carry upstream authors' email addresses in comments —
+      # measured, twenty findings, none of them ours. A check that fails for
+      # somebody else's file is one people learn to force past.
+      - name: Scan the files this project put in the bundle
+        shell: pwsh
+        run: |
+          $bad = $false
+          foreach ($name in @("docs", "prompts", "templates", "skills")) {
+            $path = "dist\daily-report\_internal\$name"
+            if (-not (Test-Path $path)) { throw "번들에 $name 이 없습니다" }
+            python -X utf8 scripts/check_no_pii.py $path --no-history
+            if ($LASTEXITCODE -ne 0) { $bad = $true }
+          }
+          if ($bad) { throw "번들에 실린 이 프로젝트의 파일에서 개인정보가 발견됐습니다" }
+
       # Inno Setup is preinstalled on the windows runner images.
       - name: Build the installer
         shell: pwsh

@@ -1315,8 +1315,12 @@ def test_the_dispatcher_does_not_shadow_a_date_argument():
     redirect its output, so the subcommand has to be removed first — otherwise
     `daily-report run 2026-08-04` treats "run" as a date."""
     source = open(os.path.join(ROOT, "cli.py"), encoding="utf-8").read()
-    rewrite = source.index("sys.argv = [")
-    assert rewrite < source.index("import run_day"), "sys.argv 재작성이 임포트보다 늦다"
+    # Inside main() only. What matters is the order things happen in at
+    # runtime, and other functions import run_day lazily — they are reached
+    # through the dispatch below, so argv has already been rewritten by then.
+    body = source.split("def main()")[1]
+    assert body.index("sys.argv = [") < body.index("import run_day"), \
+        "sys.argv 재작성이 임포트보다 늦다"
 
 
 # --- 수집 대상 노출 ---------------------------------------------------------
@@ -1740,6 +1744,187 @@ def test_purge_refuses_to_run_from_a_checkout():
     # and the flag has to actually reach it
     assert 'purge = "--purge" in' in source
     assert "return remove_installation(argv)" in source
+
+# --- 독립 감사에서 나온 결함 -------------------------------------------------
+
+def test_the_bundle_names_its_documents_one_by_one(tmp_path):
+    """`("docs", "docs")` collected a directory, and which files that is
+    depends on which tree you build from.
+
+    The public checkout holds four; the private tree holds twenty-eight, and
+    the extra twenty-four are the development notes and the release plan —
+    the files `export_public.py` refuses to publish because they carry client
+    names, project names and dates sentence by sentence. The spec's own usage
+    comment says `pyinstaller daily-report.spec`, so running it where the
+    author works would put them in the installer, and from there on the disk
+    of everyone who installs it.
+
+    Neither leak checker would have caught it: `check_binary_no_pii.py` looks
+    only for the *build machine's* identifiers, and `check_no_pii.py` was
+    never pointed at `dist/`.
+    """
+    spec = open(os.path.join(ROOT, "daily-report.spec"), encoding="utf-8").read()
+    # Code lines only — the comment above the fix quotes the old form on
+    # purpose, and a plain substring test reads that as the defect returning.
+    code = "\n".join(line for line in spec.splitlines()
+                     if not line.strip().startswith("#"))
+    assert '("docs", "docs")' not in code, "docs 디렉터리를 통째로 담는다"
+    for name in ("design.md", "design.ko.md", "notion-setup.md", "notion-setup.ko.md"):
+        assert f'("docs/{name}", "docs")' in spec, f"{name} 이 번들에 없다"
+
+    # and CI reads the files this project put there, not only the machine's name
+    workflow = open(os.path.join(ROOT, ".github", "workflows", "build.yml"),
+                    encoding="utf-8").read()
+    assert "check_no_pii.py $path" in workflow, "번들 텍스트를 검사하지 않는다"
+    # scoped: scanning all of _internal also reads Tcl/Tk's own sources, which
+    # carry upstream authors' addresses — measured, twenty findings, none ours
+    assert "dist\\daily-report\\_internal\\$name" in workflow
+
+def test_an_excluded_folder_cannot_be_reached_by_another_spelling(configured, home):
+    """`exclude.paths` is what the README calls stronger than redaction, and
+    it is the only thing that keeps a directory out of the digest entirely.
+
+    Substring matching on the string as written honours that only for the
+    spelling somebody happened to type. A `..` segment, a junction, an 8.3
+    short name or a UNC form of the same drive all reached collection — and
+    silently, because the only symptom is a project appearing in a report that
+    should not have been there, which does not read as "the exclusion failed".
+    """
+    configured()
+    secret = home / "confidential"
+    (secret / "sub").mkdir(parents=True)
+    config.load()["exclude"]["paths"] = [str(secret)]
+    config._fragments.cache_clear()
+    config._canonical_cached.cache_clear()
+
+    assert config.is_excluded(str(secret / "sub")), "합성 전제 실패"
+    indirect = os.path.join(str(home), "elsewhere", "..", "confidential", "sub")
+    assert config.is_excluded(indirect), f"'..' 로 우회됨: {indirect}"
+
+def test_the_summarizers_own_transcripts_are_pruned_and_purged():
+    """`summarize` runs `claude -p` from a scratch directory, and the comment
+    there explains this keeps the job from collecting its own summarising.
+    True — and it says nothing about how long that transcript lives, which in
+    context reads as though it did.
+
+    It is a second copy of the digest: prompts, commands and paths, verbatim.
+    Measured on one install: ten files, 544 KB, the oldest older than the
+    `work/` retention window that exists for exactly this material. Neither
+    the pruner nor `--purge` touched it, because both look inside the data
+    root and this lives in `~/.claude`.
+    """
+    assert hasattr(run_day, "summarizer_transcript_dirs")
+    source = open(os.path.join(ROOT, "run_day.py"), encoding="utf-8").read()
+    pruner = source.split("def prune_work_files")[1].split("\ndef ")[0]
+    assert "summarizer_transcript_dirs()" in pruner, "요약기 기록이 정리되지 않는다"
+    assert "WORK_DIR" in pruner, "work/ 정리가 사라졌다"
+
+    cli_source = open(os.path.join(ROOT, "cli.py"), encoding="utf-8").read()
+    purge = cli_source.split("def purge_data")[1].split("def remove_installation")[0]
+    assert "summarizer_transcript_dirs()" in purge, "--purge 가 요약기 기록을 남긴다"
+
+    # found by glob, not by reproducing Claude Code's directory encoding
+    finder = source.split("def summarizer_transcript_dirs")[1].split("\ndef ")[0]
+    assert "glob" in finder and "SCRATCH_DIR" in finder
+
+@windows_only
+def test_the_store_listing_says_a_silent_uninstall_keeps_the_token():
+    """`winget uninstall` runs the uninstaller unattended, and the dialog that
+    asks about the data cannot appear — so it always keeps it. Keeping is the
+    right default with nobody to ask; not saying so is not."""
+    listing = open(os.path.join(ROOT, "packaging", "winget",
+                                "mgm136044.daily-report.locale.ko-KR.yaml"),
+                   encoding="utf-8").read()
+    assert "winget uninstall" in listing, "무인 제거의 동작을 알리지 않는다"
+    assert "--purge" in listing, "함께 지우는 방법을 알려주지 않는다"
+
+def test_exclusion_stays_cheap_enough_to_run_per_file(configured):
+    """`realpath` touches the filesystem, and this runs per record and per
+    directory during the walk.
+
+    Resolving every path in full measured 9.1 seconds against 0.05 for 50,000
+    files, because each one is a different string and the cache never hit.
+    Exclusion asks which *tree* something is in, which is a property of its
+    directory — and a few hundred directories produce those 50,000 files.
+    """
+    import time as _time
+    configured()
+    config.load()["exclude"]["paths"] = ["/node_modules/", "/.git/"]
+    config._fragments.cache_clear()
+    config._canonical_cached.cache_clear()
+    root = "C:" + os.sep if WINDOWS else "/"
+    paths = [os.path.join(root, "proj", f"p{index % 500}", "src", f"f{index}.py")
+             for index in range(20000)]
+    started = _time.perf_counter()
+    for path in paths:
+        config.is_excluded(path)
+    elapsed = _time.perf_counter() - started
+    assert elapsed < 5, f"20,000건에 {elapsed:.1f}초 — 경로 해석이 캐시되지 않는다"
+    info = config._canonical_cached.cache_info()
+    assert info.hits > info.misses * 10, f"디렉터리 캐시가 듣지 않는다: {info}"
+
+def test_shape_fragments_still_match_at_any_depth(configured):
+    """The lists mix locations with *shapes* — `/node_modules/` is a substring
+    meant to match at any depth, not a place.
+
+    `os.path.isabs` cannot tell them apart: on Windows it calls
+    `/node_modules/` absolute, so resolving on that test turned the shape into
+    `C:\\node_modules` and it stopped matching anything. Existence is the
+    honest test.
+    """
+    configured()
+    config.load()["exclude"]["paths"] = ["/node_modules/", "/.git/"]
+    config._fragments.cache_clear()
+    assert config.is_excluded(os.path.join("C:" + os.sep, "proj", "node_modules", "x")
+                              if WINDOWS else "/proj/node_modules/x")
+    assert config.is_excluded(os.path.join("C:" + os.sep, "proj", ".git", "config")
+                              if WINDOWS else "/proj/.git/config")
+    assert not config.is_excluded(os.path.join("C:" + os.sep, "proj", "src", "x")
+                                  if WINDOWS else "/proj/src/x")
+
+def test_exclusion_fragments_expand_environment_variables(configured, home):
+    """`config.expand()` exists for this and `_fragments` did not call it.
+
+    The shipped Windows example carries `%OneDrive%/` in `walk_exclude` — an
+    entry matching nothing, in the one list whose own comment explains that
+    `%OneDrive%` is the only dependable way to name a folder that may be
+    called `OneDrive`, `OneDrive - Contoso`, or a localized variant.
+    """
+    configured()
+    secret = home / "confidential"
+    secret.mkdir(parents=True, exist_ok=True)
+    variable = "USERPROFILE" if WINDOWS else "HOME"
+    original = os.environ.get(variable)
+    try:
+        os.environ[variable] = str(home)
+        config.load()["exclude"]["paths"] = [f"%{variable}%/confidential/"
+                                             if WINDOWS else f"$HOME/confidential/"]
+        config._fragments.cache_clear()
+        config._canonical_cached.cache_clear()
+        assert config.is_excluded(str(secret / "x")), "환경변수 표기가 죽어 있다"
+    finally:
+        if original is None:
+            os.environ.pop(variable, None)
+        else:
+            os.environ[variable] = original
+        config._fragments.cache_clear()
+
+def test_the_windows_example_has_no_dead_exclusion_entry():
+    """Every rooted entry in the shipped example must be one `_fragments` can
+    actually resolve — a rule that matches nothing is worse than none, because
+    the list reads as covering something it does not."""
+    import tomllib
+    with open(os.path.join(ROOT, "config.windows.example.toml"), "rb") as handle:
+        parsed = tomllib.load(handle)
+    entries = (parsed["exclude"]["paths"]
+               + parsed["sources"].get("walk_exclude", []))
+    for entry in entries:
+        if "%" not in entry:
+            continue
+        expanded = config.expand(entry)
+        assert "%" not in expanded, \
+            f"확장되지 않는 환경변수가 남아 있다: {entry} -> {expanded}"
+
 
 # --- 새 설정이 기존 설치에 도달하는가 --------------------------------------
 

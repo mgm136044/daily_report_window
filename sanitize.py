@@ -70,12 +70,22 @@ PATTERNS: list[tuple[str, re.Pattern]] = [
     ("email", re.compile(
         r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*\.[A-Za-z]{2,}\b")),
     # prefixed or bare secret-ish variable names, `=` or `:` separated
+    # `(?!<REDACTED)` keeps this rule off a marker an earlier rule just wrote.
+    #
+    # Spacing the marker's fields was not enough, and the comment in `_mask`
+    # said it was. `token: ntn_…` becomes `token: <REDACTED notion_token …>`,
+    # and `<REDACTED` is nine characters with no space in it — a perfectly good
+    # value as far as this pattern is concerned. The result was
+    # `token=<REDACTED> notion_token ntn_AA… len28>`: the value gone twice
+    # over, and the kind and length left dangling behind an unbalanced
+    # bracket. `.env` lines and shell history are almost entirely `KEY=value`,
+    # so this was the common case rather than an edge one.
     ("key_assignment", re.compile(
         r"(?i)(?:^|[^A-Za-z0-9_])"
         r"([A-Za-z0-9_]*(?:API[_-]?KEY|ACCESS[_-]?TOKEN|AUTH[_-]?TOKEN|"
         r"SECRET[_-]?KEY|CLIENT[_-]?SECRET|PRIVATE[_-]?KEY|PASSWORD|PASSWD|"
         r"SECRET|TOKEN)[A-Za-z0-9_]*)"
-        r"\s*[=:]\s*[\"']?([^\s\"'&;,)]{8,})")),
+        r"\s*[=:]\s*[\"']?(?!<REDACTED)([^\s\"'&;,)]{8,})")),
     # Korean prose form. Requires the value to look like a secret (contains a
     # digit or symbol and no spaces) so ordinary sentences are not damaged.
     #
@@ -112,6 +122,13 @@ def _mask(kind: str, matched: str) -> str:
     `<REDACTED=<REDACTED>`: the sanitizer's own second pass destroyed the kind
     and length that make a finding diagnosable, on roughly half the rules,
     since most of their names contain `token` or `key`.
+
+    **Spacing alone did not finish the job, and this paragraph used to claim it
+    had.** A bare `ntn_…` came out clean, which is what the test checked; but
+    `token: ntn_…` still collapsed, because `<REDACTED` is nine characters with
+    no space in it and `key_assignment` was happy to treat it as a value. The
+    lookahead on that rule is what actually closes it. Named here because the
+    wrong version of this comment is why nobody looked again.
     """
     if kind in ("key_assignment", "korean_secret"):
         cut = min((i for i in (matched.find("="), matched.find(":")) if i >= 0),

@@ -44,7 +44,9 @@ PC 가 자거나 꺼져 있었으면 다음 실행에서 밀린 날짜를 채운
 
 - **macOS 또는 Windows 10/11.** [지원 플랫폼](#지원-플랫폼) 참고.
 - **Python 3.11+.** 표준 라이브러리만 쓴다. 설치할 패키지가 없다.
-- **로그인된 Claude Code CLI.** 요약을 `claude -p` 가 만든다.
+- **로그인된 Claude Code CLI 또는 Codex CLI.** 요약을 `claude -p` 나
+  `codex exec` 가 만든다 — [요약 엔진](#요약-엔진) 참고. 둘 다 없으면 수집은
+  되지만 보고서가 안 나온다.
 - **Notion 내부 연결 토큰**과 데이터베이스를 만들 부모 페이지.
 
 ## 설치
@@ -221,6 +223,48 @@ python setup_gui.py
 `python3 doctor.py --full` 이 일곱 가지를 **원인 순서대로** 검사한다 — 스케줄러 등록,
 설정, 실행 이력, 남은 잠금, Notion 접근, 디스크, 무인 인증. 판정만 내지 않고
 **무엇을 봤는지**를 같이 출력하므로 첫 실패가 대개 원인이다.
+
+## 요약 엔진
+
+보고서를 쓰는 CLI 를 고른다. 수집기는 어느 쪽이든 상관없다 — 이 설정은 요약만
+결정한다.
+
+```toml
+[summary]
+engine = "claude"   # 또는 "codex"
+codex_bin = ""      # 자동 탐지 실패 시 전체 경로
+codex_model = ""    # 비우면 ~/.codex/config.toml 의 선택을 따른다
+```
+
+| | Claude Code | Codex |
+|---|---|---|
+| 호출 | `claude -p` | `codex exec --ephemeral -o <파일> -` |
+| 프롬프트 | stdin | stdin |
+| 답변 | stdout | `-o` 파일 |
+
+**둘 다 프롬프트를 stdin 으로 받는다.** 바쁜 하루의 digest 는 175KB 쯤 되고
+Windows 명령줄 상한은 32,767자다. 인자로 넘기는 방식은 서서히 나빠지는 게 아니라
+그냥 실패한다.
+
+Codex 는 답변을 stdout 이 아니라 `-o` 파일에서 읽는다. `codex exec` 의 stdout 은
+배너·프롬프트 에코·답변·토큰 수가 섞인 세션 로그라, 거기서 보고서를 뽑으려면 산문을
+파싱해야 한다. 같은 이유로 **실패 메시지에 codex 의 stdout 은 인용하지 않는다** —
+에코된 프롬프트가 곧 digest 라 앞을 자르든 뒤를 자르든 그날 수집한 내용이 로그와
+알림으로 샌다. `claude -p` 는 에코가 없어 그쪽은 stdout 을 인용한다.
+
+`--ephemeral` 은 선택이 아니다. 없으면 요약 세션이 `~/.codex/sessions` 에 남아
+다음 날 자기 자신을 수집한다. Claude 쪽은 제외된 스크래치 디렉터리에서 돌려 같은
+결과를 얻지만, Codex 롤아웃은 작업 디렉터리와 무관하게 기록되므로 명시해야 한다.
+
+**Codex 는 PATH 에 아무것도 안 남기는 설치가 많다.** 자동 탐지는 PATH, npm,
+`~/.local/bin`, 그리고 Windows 데스크톱 설치의
+`%LOCALAPPDATA%\OpenAI\Codex\bin\<빌드해시>\codex.exe` 를 훑는다. 빌드 해시는
+버전마다 바뀌고 여러 개가 함께 있을 수 있어 최신 것을 고른다. 못 찾으면
+`codex_bin` 에 전체 경로를 넣는다.
+
+`doctor` 는 **설정된 엔진만** 점검한다. 이 통합은 codex 0.147 계열에서 확인했고,
+필요한 옵션이 설치된 codex 에 없으면 어느 옵션이 왜 필요한지 이름을 대고 멈춘다 —
+`codex exec --help` 를 읽어 확인하므로 모델 호출이 들지 않는다.
 
 ## 프라이버시
 

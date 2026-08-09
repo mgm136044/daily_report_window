@@ -231,27 +231,43 @@ def check_tooling() -> None:
     except (subprocess.SubprocessError, OSError):
         report(FAIL, "git", "git 을 찾지 못했습니다 — 커밋이 하나도 수집되지 않습니다")
 
-    # Resolve the CLI the same way the summarizer will. A check that cannot
-    # pass is a check people learn to ignore, so "found on PATH" is a pass.
-    argv = summarize.claude_argv()
+    # Resolve the CLI the same way the summarizer will — and the same *engine*
+    # it will. Reporting on Claude while Codex does the work would be health
+    # about a program the job never starts. A check that cannot pass is a check
+    # people learn to ignore, so "found on PATH" is a pass.
+    try:
+        which = summarize.engine()
+    except RuntimeError as error:
+        report(FAIL, "요약 엔진", str(error))
+        return
+    label = {"claude": "Claude Code CLI", "codex": "Codex CLI"}[which]
+    setting = {"claude": "claude_bin", "codex": "codex_bin"}[which]
+    argv = summarize.engine_argv()
     target = argv[-1]
     resolved = target if os.path.isabs(target) else (
         shutil.which(target, path=summarize.REQUIRED_PATH) or "")
     if resolved and os.path.isfile(resolved):
-        report(OK, "Claude Code CLI", resolved)
+        report(OK, label, resolved)
     else:
-        report(FAIL, "Claude Code CLI",
+        report(FAIL, label,
                f"{target} 을 찾지 못했습니다 (PATH: {summarize.REQUIRED_PATH})\n"
-               f"config.toml 의 [summary] claude_bin 에 전체 경로를 넣으세요.")
+               f"config.toml 의 [summary] {setting} 에 전체 경로를 넣으세요.")
 
 
 def check_auth() -> None:
+    try:
+        which = summarize.engine()
+    except RuntimeError as error:
+        report(FAIL, "헤드리스 인증", str(error))
+        return
     ok, message = summarize.preflight()
     if ok:
-        report(OK, "헤드리스 인증", "claude -p 정상")
+        report(OK, "헤드리스 인증",
+               "claude -p 정상" if which == "claude" else "codex exec 정상")
     else:
         report(FAIL, "헤드리스 인증", f"{message}\n"
-                                     "USER 환경변수 누락이면 plist 를 확인하세요")
+               + ("USER 환경변수 누락이면 plist 를 확인하세요" if which == "claude"
+                  else "PATH 에 codex 심이 없으므로 codex_bin 설정을 확인하세요"))
 
 
 def check_notion() -> None:

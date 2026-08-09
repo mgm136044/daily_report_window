@@ -162,7 +162,7 @@ if ($Frozen) {
 }
 
 # ------------------------------------------------------------------ claude ---
-Step "3/9  Claude Code CLI 확인"
+Step "3/9  요약 엔진 확인"
 $claudeBin = ""
 $claudeCandidates = @(
     (Join-Path $HOME ".local\bin\claude.exe"),
@@ -174,10 +174,39 @@ if ($onPath) { $claudeCandidates = @($onPath.Source) + $claudeCandidates }
 foreach ($candidate in $claudeCandidates) {
     if ($candidate -and (Test-Path $candidate)) { $claudeBin = $candidate; break }
 }
+
+# Codex can write the report instead. Looked for the same way, except that the
+# desktop install leaves nothing on PATH and lives under a build hash that
+# changes with every version — so the directory is globbed and the newest
+# taken, which is what platform_support.Windows.codex_argv does at run time.
+$codexBin = ""
+$codexCandidates = @(
+    (Join-Path $HOME ".local\bin\codex.exe"),
+    (Join-Path $HOME ".local\bin\codex.cmd"),
+    (Join-Path $env:APPDATA "npm\codex.cmd")
+)
+$codexOnPath = Get-Command codex -ErrorAction SilentlyContinue
+if ($codexOnPath) { $codexCandidates = @($codexOnPath.Source) + $codexCandidates }
+$codexCandidates += (Get-ChildItem (Join-Path $env:LOCALAPPDATA "OpenAI\Codex\bin") `
+                        -Filter codex.exe -Recurse -Depth 1 -ErrorAction SilentlyContinue |
+                     Sort-Object LastWriteTime -Descending | ForEach-Object { $_.FullName })
+foreach ($candidate in $codexCandidates) {
+    if ($candidate -and (Test-Path $candidate)) { $codexBin = $candidate; break }
+}
+
+# Claude stays the default where both exist: it is the path this project has
+# the most hours on. Codex is chosen only when it is the only one here, which
+# is the case that used to be told "요약이 생성되지 않습니다" — wrong advice for
+# someone who has a perfectly good CLI installed.
+$engine = "claude"
 if ($claudeBin) {
     Ok "claude: $claudeBin"
+    if ($codexBin) { Ok "codex 도 있습니다 — engine 을 codex 로 바꾸면 그쪽을 씁니다" }
+} elseif ($codexBin) {
+    $engine = "codex"
+    Ok "codex: $codexBin  (claude 가 없어 요약 엔진을 codex 로 설정합니다)"
 } else {
-    Warn "claude 를 찾지 못했습니다. 수집은 되지만 요약이 생성되지 않습니다."
+    Warn "claude 도 codex 도 찾지 못했습니다. 수집은 되지만 요약이 생성되지 않습니다."
 }
 
 # ------------------------------------------------------------------ config ---
@@ -200,6 +229,16 @@ if (Test-Path $ConfigPath) {
     if ($claudeBin) {
         $escaped = $claudeBin.Replace('\', '\\')
         $text = $text.Replace('claude_bin = ""', "claude_bin = `"$escaped`"")
+    }
+    # Recorded whichever engine wins, because nothing puts codex on PATH: a
+    # scheduled task that has to find it by globbing a build hash is one
+    # version bump away from not finding it, and the path is known right now.
+    if ($codexBin) {
+        $escapedCodex = $codexBin.Replace('\', '\\')
+        $text = $text.Replace('codex_bin = ""', "codex_bin = `"$escapedCodex`"")
+    }
+    if ($engine -ne 'claude') {
+        $text = $text.Replace('engine = "claude"', "engine = `"$engine`"")
     }
     Write-Utf8NoBom $ConfigPath $text
     Ok "config.windows.example.toml -> config.toml  (언어 $language, Label $label)"

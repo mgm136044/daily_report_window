@@ -340,10 +340,21 @@ watchdog_sec = 2400
 regression_alerts = true
 
 [summary]
+# Which CLI writes the report: "claude" or "codex". Both take the prompt on
+# stdin and run headlessly. The collectors do not care either way — this only
+# decides who does the summarising, and `doctor` checks whichever is chosen.
+engine = "claude"
 model_timeout_sec = 900
-max_turns = 1
+max_turns = 1          # claude only — codex is constrained by its sandbox
 # Full path to the Claude Code CLI. Leave empty to find it automatically:
 # `~/.local/bin/claude.exe` (native install), then PATH, then the npm shim.
 # Set it if the CLI lives somewhere else — a scheduled task does not inherit
 # the PATH your terminal has.
 claude_bin = ""
+# Full path to the Codex CLI. Leave empty to find it automatically, which on
+# Windows means globbing `%LOCALAPPDATA%\OpenAI\Codex\bin\<build>\codex.exe`
+# — the desktop install has no stable path and puts no shim on PATH, so this
+# setting earns its keep more often than claude_bin does.
+codex_bin = ""
+# Model for codex. Empty uses whatever ~/.codex/config.toml already selects.
+codex_model = ""

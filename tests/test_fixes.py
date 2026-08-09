@@ -1349,6 +1349,157 @@ def test_desktop_app_needs_no_extra_source():
         "데스크톱 세션을 중복 수집하도록 설정돼 있다"
 
 
+# --- 요약 엔진 (claude / codex) --------------------------------------------
+
+def _engine(name: str, **extra):
+    """Point [summary] at one engine for the duration of a test."""
+    cfg = config.load().setdefault("summary", {})
+    cfg["engine"] = name
+    cfg.update(extra)
+    return cfg
+
+def test_the_engine_choice_is_refused_by_name_when_it_is_a_typo():
+    """Otherwise it surfaces at 04:05 as a KeyError with no clue in it."""
+    original = config.load().get("summary", {}).get("engine")
+    try:
+        _engine("codxe")
+        try:
+            summarize.engine()
+        except RuntimeError as error:
+            assert "codxe" in str(error) and "codex" in str(error)
+        else:
+            raise AssertionError("잘못된 엔진 이름이 통과됨")
+        assert summarize.engine.__module__  # sanity
+        _engine("CoDeX")                    # case and spacing are forgiven
+        assert summarize.engine() == "codex"
+        _engine("claude")
+        assert summarize.engine() == "claude"
+    finally:
+        config.load().setdefault("summary", {})["engine"] = original
+
+def test_an_absent_engine_setting_still_means_claude():
+    """Every config.toml written before this existed has no such key, and an
+    upgrade must not change which CLI those installs use."""
+    cfg = config.load().setdefault("summary", {})
+    original = cfg.get("engine")
+    try:
+        cfg.pop("engine", None)
+        assert summarize.engine() == "claude"
+    finally:
+        cfg["engine"] = original
+
+def test_the_codex_prompt_goes_on_stdin_not_in_the_command():
+    """A busy day's digest is ~175 KB and Windows caps an entire command line
+    at 32,767 characters, so a prompt passed as an argument does not degrade —
+    it fails outright. `-` is what tells codex to read stdin."""
+    cfg = _engine("codex")
+    command = summarize.codex_command(os.path.join("out", "report.md"), cfg)
+    assert command[-1] == "-", f"stdin 지시자가 없다: {command}"
+    assert "exec" in command
+    joined = " ".join(command)
+    assert len(joined) < 1000, "명령줄에 프롬프트가 실려 있다"
+
+def test_the_codex_command_keeps_the_run_out_of_its_own_sessions():
+    """Without --ephemeral the summarizer's own rollout lands in
+    ~/.codex/sessions and the job reports on itself the next night.
+
+    Claude gets this from running in an excluded scratch directory. A Codex
+    rollout is written regardless of the working directory, so it has to be
+    asked for — `-C` is only the second line of defence.
+    """
+    cfg = _engine("codex")
+    command = summarize.codex_command("out.md", cfg)
+    assert "--ephemeral" in command
+    assert "-C" in command
+    assert command[command.index("-C") + 1] == summarize.SCRATCH_DIR
+    # and the answer is read from a file, never from stdout
+    assert "-o" in command and command[command.index("-o") + 1] == "out.md"
+    # the summarizer has no reason to execute anything
+    assert command[command.index("-s") + 1] == "read-only"
+
+def test_the_codex_model_is_only_passed_when_it_is_set():
+    """Empty must mean "whatever ~/.codex/config.toml already selects", not
+    an empty -m that codex would reject."""
+    cfg = _engine("codex", codex_model="")
+    assert "-m" not in summarize.codex_command("o.md", cfg)
+    cfg = _engine("codex", codex_model="gpt-5.6-luna")
+    command = summarize.codex_command("o.md", cfg)
+    assert command[command.index("-m") + 1] == "gpt-5.6-luna"
+
+def test_a_codex_failure_never_quotes_its_stdout_at_all():
+    """`codex exec` echoes the whole prompt back on stdout, and the prompt is
+    the digest.
+
+    The Claude path quotes `stdout[:300]` and is right to — `claude -p` echoes
+    nothing. Here no slice is safe. The head obviously is not, and the tail is
+    where this first landed: the echo runs right up to the answer with about
+    thirty characters of token accounting after it, so the last 300 are still
+    the day's collected material. That version of this test failed, which is
+    the only reason the rule is now "never stdout" rather than "not the head".
+    """
+    class Result:
+        stdout = ("OpenAI Codex v0.0.0\n--------\nworkdir: x\n--------\nuser\n"
+                  + "비밀 다이제스트 내용 " * 40 + "\n\ncodex\n답\ntokens used\n12,190")
+        stderr = ""
+    detail = summarize._codex_detail(Result())
+    assert "비밀 다이제스트" not in detail, f"프롬프트가 오류 메시지로 샌다: {detail[:80]}"
+    assert "다이제스트 내용" not in detail
+    assert len(detail) <= 300
+
+    class WithStderr(Result):
+        stderr = "error: something went wrong"
+    detail = summarize._codex_detail(WithStderr())
+    assert "something went wrong" in detail
+    assert "비밀" not in detail
+
+def test_missing_codex_flags_are_named_rather_than_discovered_at_night():
+    """This integration was written against one CLI version on one machine.
+
+    A build without `--ephemeral` exits with a usage error naming a token, at
+    04:05, in a log nobody is reading. Checking the help text costs no model
+    call and turns that into a sentence during setup.
+    """
+    assert set(summarize.CODEX_REQUIRED_FLAGS) >= {"-o", "--ephemeral"}
+    complete = "usage: codex exec\n  -o FILE\n  --ephemeral\n  --skip-git-repo-check\n  --color\n"
+    assert summarize.codex_missing_flags(complete) == []
+    partial = "usage: codex exec\n  -o FILE\n  --color\n"
+    assert set(summarize.codex_missing_flags(partial)) == {"--ephemeral",
+                                                           "--skip-git-repo-check"}
+    # an unrunnable CLI is a different failure and is reported by the caller
+    assert summarize.codex_missing_flags("") == []
+
+def test_doctor_checks_whichever_engine_will_actually_run():
+    """Reporting Claude's health while Codex does the work is health about a
+    program the job never starts."""
+    source = open(os.path.join(ROOT, "doctor.py"), encoding="utf-8").read()
+    assert "summarize.engine_argv()" in source, "doctor 가 엔진과 무관하게 claude 를 본다"
+    assert "Codex CLI" in source and "codex_bin" in source
+
+@windows_only
+def test_the_installer_does_not_tell_a_codex_user_they_get_no_report():
+    """Step 3 looked only for claude and said "요약이 생성되지 않습니다".
+
+    For someone with Codex installed that is wrong advice about a CLI they
+    already have, and it is the whole audience this engine option exists for.
+    """
+    script = open(os.path.join(ROOT, "install.ps1"), encoding="utf-8-sig").read()
+    step = script.split("Step \"3/9")[1].split("Step \"4/9")[0]
+    assert "codex" in step.lower(), "설치기가 codex 를 찾아보지 않는다"
+    assert "OpenAI\\Codex\\bin" in step, "데스크톱 설치 경로를 훑지 않는다"
+    # claude stays the default when both are present
+    assert '$engine = "claude"' in step
+
+def test_both_example_configs_offer_the_engine_setting():
+    import tomllib
+    for name in ("config.example.toml", "config.windows.example.toml"):
+        with open(os.path.join(ROOT, name), "rb") as handle:
+            parsed = tomllib.load(handle)
+        summary = parsed["summary"]
+        assert summary["engine"] in summarize.ENGINES, name
+        for key in ("claude_bin", "codex_bin", "codex_model"):
+            assert key in summary, f"{name} 에 {key} 누락"
+
+
 # --- 상태 창 ---------------------------------------------------------------
 #
 # Only the reading of the ledger is tested. The widgets are not: the failures

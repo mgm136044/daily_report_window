@@ -48,7 +48,8 @@ backfills from it.
 
 - **macOS, or Windows 10/11.** See [Platform support](#platform-support).
 - **Python 3.11+.** Standard library only — there is nothing to install.
-- **Claude Code CLI, logged in.** The summary is produced by `claude -p`.
+- **Claude Code CLI or Codex CLI, logged in.** The summary is produced by
+  `claude -p` or `codex exec` — see [Summary engine](#summary-engine).
 - **A Notion internal integration token** and a page to create the database under.
 
 ## Setup
@@ -246,6 +247,52 @@ nothing that exists there. The keys that matter most:
 registration, configuration, run history, stale locks, Notion reachability,
 disk usage, headless authentication — and prints what it looked at rather than
 just a verdict. The first failure is usually the cause.
+
+## Summary engine
+
+Which CLI writes the report. The collectors do not care either way — this
+setting decides only who does the summarising.
+
+```toml
+[summary]
+engine = "claude"   # or "codex"
+codex_bin = ""      # full path, if it cannot be found automatically
+codex_model = ""    # empty follows whatever ~/.codex/config.toml selects
+```
+
+| | Claude Code | Codex |
+|---|---|---|
+| Invocation | `claude -p` | `codex exec --ephemeral -o <file> -` |
+| Prompt | stdin | stdin |
+| Answer | stdout | the `-o` file |
+
+**Both take the prompt on stdin.** A busy day's digest is around 175 KB and
+Windows caps an entire command line at 32,767 characters, so passing it as an
+argument does not degrade — it fails outright.
+
+Codex's answer is read from the `-o` file rather than stdout, because
+`codex exec` prints a session log: a banner, the whole prompt echoed back, the
+answer, a token count. Taking the report off stdout would mean parsing prose
+out of a transcript. For the same reason **a failure never quotes codex's
+stdout** — the echoed prompt is the digest, so slicing either end of it puts
+the day's collected material into the log and the failure notification.
+`claude -p` echoes nothing, so that path does quote stdout.
+
+`--ephemeral` is not optional. Without it the summarizer's own rollout lands
+in `~/.codex/sessions` and the job collects itself the next night. The Claude
+side gets this from running in an excluded scratch directory, but a Codex
+rollout is written regardless of the working directory.
+
+**Many Codex installs put nothing on PATH.** Detection tries PATH, npm,
+`~/.local/bin`, and the Windows desktop install's
+`%LOCALAPPDATA%\OpenAI\Codex\bin\<build>\codex.exe` — the build hash changes
+with every version and several can be present at once, so the newest wins. Set
+`codex_bin` if none of that finds it.
+
+`doctor` checks whichever engine is configured. This integration was verified
+against the codex 0.147 line; if a build lacks an option it needs, setup stops
+and names the option and what it is for. The check reads
+`codex exec --help`, so it costs no model call.
 
 ## Privacy
 

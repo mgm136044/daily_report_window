@@ -183,7 +183,17 @@ watchdog_sec = 2400
 regression_alerts = true
 
 [summary]
+# Which CLI writes the report: "claude" or "codex". Both read the prompt from
+# stdin and are driven headlessly; the collectors are unaffected either way,
+# so this only decides who does the summarising.
+engine = "claude"
 model_timeout_sec = 900
-max_turns = 1
+max_turns = 1          # claude only — codex is constrained by its sandbox
 # Full path to the Claude Code CLI. Leave empty to find it on PATH.
 claude_bin = ""
+# Full path to the Codex CLI. Leave empty to find it automatically. Worth
+# setting on more installs than claude_bin is: several Codex installers put
+# nothing on PATH at all.
+codex_bin = ""
+# Model for codex. Empty uses whatever ~/.codex/config.toml already selects.
+codex_model = ""

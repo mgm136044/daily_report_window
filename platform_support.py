@@ -149,6 +149,10 @@ class Platform:
         """How to invoke the Claude Code CLI, resolved to something runnable."""
         return [configured or "claude"]
 
+    def codex_argv(self, configured: str = "") -> list[str]:
+        """How to invoke the Codex CLI, resolved to something runnable."""
+        return [configured or "codex"]
+
     # --- filesystem ------------------------------------------------------
     def restrict(self, path: str, is_dir: bool) -> None:
         """Narrow a path so other accounts on the machine cannot read it.
@@ -271,6 +275,9 @@ class MacOS(Platform):
 
     def claude_argv(self, configured: str = "") -> list[str]:
         return [configured or "claude"]
+
+    def codex_argv(self, configured: str = "") -> list[str]:
+        return [configured or "codex"]
 
     def restrict(self, path: str, is_dir: bool) -> None:
         try:
@@ -603,6 +610,56 @@ class Windows(Platform):
         resolved = next((c for c in candidates if c and os.path.isfile(c)), "")
         if not resolved:
             return ["claude"]  # let the FileNotFoundError say so
+        if resolved.lower().endswith((".cmd", ".bat")):
+            comspec = os.environ.get("ComSpec") or os.path.join(
+                os.environ.get("SystemRoot", r"C:\Windows"), "system32", "cmd.exe")
+            return [comspec, "/d", "/c", resolved]
+        return [resolved]
+
+    def codex_argv(self, configured: str = "") -> list[str]:
+        """Resolve the Codex CLI, which has no stable path on Windows.
+
+        Unlike Claude Code there is no `~/.local/bin` shim: the desktop
+        install puts the executable under
+        `%LOCALAPPDATA%\\OpenAI\\Codex\\bin\\<build hash>\\codex.exe`, the hash
+        changes with every version, and more than one build directory is
+        normally present at once (two on the machine this was written against).
+        So the newest is taken, and `summary.codex_bin` overrides it — which
+        matters more here than for Claude, because there is nothing on PATH to
+        fall back to.
+        """
+        import glob as _glob
+        import shutil
+
+        candidates = []
+        if configured:
+            candidates.append(configured)
+        home = os.path.expanduser("~")
+        candidates += [
+            os.path.join(home, ".local", "bin", "codex.exe"),
+            os.path.join(home, ".local", "bin", "codex.cmd"),
+        ]
+        found = shutil.which("codex", path=self.default_path())
+        if found:
+            candidates.append(found)
+
+        local = os.environ.get("LOCALAPPDATA", os.path.join(home, "AppData", "Local"))
+        builds = _glob.glob(os.path.join(local, "OpenAI", "Codex", "bin", "*", "codex.exe"))
+        # Newest first, and the path breaks a tie so the answer is the same on
+        # every run — two builds unpacked in the same second is the normal case,
+        # and a summarizer that picks a different one each night is worse than
+        # one that picks the wrong one consistently.
+        candidates += sorted(builds, key=lambda p: (-os.path.getmtime(p), p))
+
+        appdata = os.environ.get("APPDATA", os.path.join(home, "AppData", "Roaming"))
+        candidates += [
+            os.path.join(appdata, "npm", "codex.cmd"),
+            os.path.join(appdata, "npm", "codex.exe"),
+        ]
+
+        resolved = next((c for c in candidates if c and os.path.isfile(c)), "")
+        if not resolved:
+            return ["codex"]  # let the FileNotFoundError say so
         if resolved.lower().endswith((".cmd", ".bat")):
             comspec = os.environ.get("ComSpec") or os.path.join(
                 os.environ.get("SystemRoot", r"C:\Windows"), "system32", "cmd.exe")

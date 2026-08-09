@@ -168,6 +168,15 @@ target_chars = 5000
 schema_language = "en"
 
 [run]
+# When the scheduled job fires, as HH:MM. Read by the installer when it builds
+# the scheduler entry; changing it afterwards means re-running the installer.
+#
+# Must be at or after `[day] boundary_hour` — the run reports the *previous*
+# logical day, and that day is not closed until the boundary passes. Later is
+# often better: a machine that is asleep at four never runs, while 09:00
+# catches it as its owner sits down and still reports yesterday.
+schedule_time = "04:05"
+
 # Abort and notify if one day's processing exceeds this. A scheduled job that
 # hangs is worse than one that fails — no report, no error, no signal.
 watchdog_sec = 2400

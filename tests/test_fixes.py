@@ -1534,16 +1534,24 @@ def test_a_finished_day_is_recorded_even_when_nobody_is_reading():
     # and the ledger must be written before anything is said about it
     source = open(os.path.join(ROOT, "run_day.py"), encoding="utf-8").read()
     body = source.split("for date_str in targets:")[1].split("except Exception")[0]
-    assert "write_state(state)" in body and "say(" in body
-    assert body.index("write_state(state)") < body.index("say("), \
+    # Named exactly, because there is now a second say() — the one that
+    # explains why an in-progress day is not being recorded — and it is on the
+    # branch that deliberately does not write the ledger at all.
+    summary = 'say(f"{date_str}: 건너뜀'
+    assert "write_state(state)" in body and summary in body
+    assert body.index("write_state(state)") < body.index(summary), \
         "장부보다 콘솔 출력이 먼저다 — 파이프가 끊기면 완료된 날이 사라진다"
 
-def test_a_day_that_has_not_closed_yet_is_refused():
-    """The manual-date button builds any *closed* day.
+def test_today_can_be_built_on_purpose_but_tomorrow_cannot():
+    """Refusing the current day was the tool arguing with its own purpose.
 
-    The logical day is still in progress until the boundary hour, so a report
-    for it would be built from an unfinished day — and afterwards that is
-    indistinguishable from a quiet one.
+    Someone leaving the office at six wants today's report; being told to wait
+    for 04:05 tomorrow is not an answer. The original reasoning — that a
+    partial day afterwards reads like a quiet one — is handled where it
+    belongs: the day stays out of the ledger, so the scheduled run still
+    produces the complete version, and the caller warns first.
+
+    A day that has not begun is still refused: there is nothing to collect.
     """
     import status_window as sw
     today = "2026-08-08"
@@ -1551,13 +1559,49 @@ def test_a_day_that_has_not_closed_yet_is_refused():
     day, problem = sw.validate_requested_day(" 2026-08-07 ", today)
     assert (day, problem) == ("2026-08-07", "")
 
-    for unfinished in (today, "2026-08-09"):
-        day, problem = sw.validate_requested_day(unfinished, today)
-        assert not day and "끝나지 않은" in problem, f"허용됨: {unfinished}"
+    day, problem = sw.validate_requested_day(today, today)
+    assert (day, problem) == (today, ""), "오늘이 거부됐다"
+
+    day, problem = sw.validate_requested_day("2026-08-09", today)
+    assert not day and "시작되지도" in problem, "미래 날짜가 통과됐다"
 
     for junk in ("", "   ", "어제", "2026/08/07", "20260807", "2026-13-01"):
         day, problem = sw.validate_requested_day(junk, today)
         assert not day and problem, f"거부되지 않음: {junk!r}"
+
+def test_building_today_warns_that_it_is_a_snapshot():
+    """Not a refusal — a sentence, before a model call is spent on a day that
+    is still moving."""
+    import status_window as sw
+    today = "2026-08-08"
+    assert sw.in_progress_warning("2026-08-07", today) == "", "닫힌 날에도 경고한다"
+    warning = sw.in_progress_warning(today, today)
+    assert "진행 중" in warning and "이후에 한 일은 들어가지 않습니다" in warning
+    # and it must promise what run_day actually does
+    assert "건너뛰지 않" in warning
+
+def test_an_unfinished_day_is_published_but_not_recorded():
+    """Otherwise pressing "오늘 지금까지" costs the day its real report.
+
+    Recording it would take the date off the pending list, so the scheduled
+    run would skip it and everything done after the button press would never
+    be reported by anything. Notion is keyed by date, so the complete version
+    replaces the snapshot instead of duplicating it.
+    """
+    source = open(os.path.join(ROOT, "run_day.py"), encoding="utf-8").read()
+    body = source.split("for date_str in targets:")[1].split("except Exception")[0]
+    guard = "if date_str == config.logical_date("
+    assert guard in body, "진행 중인 날짜를 구분하지 않는다"
+    # the ledger write must sit on the closed-day side of that branch
+    assert body.index(guard) < body.index("write_state(state)"), \
+        "장부 기록이 진행중 판정보다 앞선다"
+
+def test_the_window_offers_one_press_for_today():
+    source = open(os.path.join(ROOT, "status_window.py"), encoding="utf-8").read()
+    assert '("오늘 지금까지"' in source
+    assert "def build_today" in source
+    body = source.split("def build_today")[1].split("def ")[0]
+    assert "askokcancel" in body, "확인 없이 모델 호출을 쓴다"
 
 def test_the_scheduler_panel_is_filled_from_the_main_thread():
     """It came up empty — no status, not even the "조회 중…" it starts with.
@@ -1568,7 +1612,9 @@ def test_the_scheduler_panel_is_filled_from_the_main_thread():
     scheduled is the failure this window exists to prevent.
     """
     source = open(os.path.join(ROOT, "status_window.py"), encoding="utf-8").read()
-    worker = source.split("def load_scheduler")[1].split("threading.Thread")[0]
+    # Only the worker's own body. `probe_scheduler` sits right after it and
+    # does touch the StringVar, correctly — it runs on the main thread.
+    worker = source.split("def load_scheduler")[1].split("def probe_scheduler")[0]
     assert "scheduler_line.set(" not in worker, "작업 스레드가 위젯을 직접 건드린다"
     assert "scheduler_result.put(" in worker
     drain = source.split("def drain(")[1].split("def run_command")[0]
@@ -1616,9 +1662,43 @@ def test_the_window_repaints_when_a_command_finishes():
     refresh = source.split("def refresh(")[1].split("def drain(")[0]
     assert "run_day.read_state()" in refresh, "장부를 다시 읽지 않는다"
     assert "config.logical_date" in refresh, "논리적 오늘을 다시 계산하지 않는다"
+    # The scheduler panel is not in the ledger and was the one thing refresh()
+    # did not re-read: after `예약 작업 등록` the task was registered and the
+    # panel kept saying it was not, which is what got reported.
+    assert "probe_scheduler()" in refresh, "스케줄러를 다시 조회하지 않는다"
     # the button label is data, not a constant: a window left open across the
     # boundary hour was offering to rebuild the wrong date
     assert "yesterday_button" in refresh
+
+@windows_only
+def test_the_scheduled_time_is_configurable_and_validated():
+    """04:05 was hard-coded into the trigger. A machine that is asleep at four
+    never runs, and `[day] boundary_hour` was configurable while the thing it
+    constrains was not.
+
+    Read back from the config the install will actually use, because on an
+    upgrade step 4 leaves an existing config.toml alone — so whatever the
+    person set is what the trigger has to say. A bad value is refused rather
+    than defaulted: silently falling back to 04:05 is a job firing at a time
+    nobody chose.
+    """
+    import tomllib
+    script = open(os.path.join(ROOT, "install.ps1"), encoding="utf-8-sig").read()
+    assert "schedule_time" in script, "설치기가 설정을 읽지 않는다"
+    assert "'2020-01-01T04:05:00'" not in script, "시각이 아직 박혀 있다"
+    assert "$scheduleTime" in script
+    # a value earlier than the boundary means the day being reported has not
+    # closed, which is worth stopping for
+    assert "boundary_hour" in script and "보다 이릅니다" in script
+
+    for name in ("config.example.toml", "config.windows.example.toml"):
+        with open(os.path.join(ROOT, name), "rb") as handle:
+            parsed = tomllib.load(handle)
+        value = parsed["run"]["schedule_time"]
+        hour, minute = (int(part) for part in value.split(":"))
+        assert 0 <= hour <= 23 and 0 <= minute <= 59, f"{name}: {value}"
+        assert hour >= parsed["day"]["boundary_hour"], \
+            f"{name}: 예약 시각이 하루 경계보다 이르다"
 
 def test_purge_refuses_to_run_from_a_checkout():
     """`--purge` deletes the data root. From a checkout that *is* the source

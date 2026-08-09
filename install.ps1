@@ -143,7 +143,7 @@ Ok "$python ($pythonVersion)"
 $pythonw = Join-Path (Split-Path $python -Parent) "pythonw.exe"
 if (-not (Test-Path $pythonw)) {
     $pythonw = $python
-    Warn "pythonw.exe 가 없어 python.exe 로 등록합니다 (매일 04:05 에 콘솔 창이 잠깐 뜹니다)"
+    Warn "pythonw.exe 가 없어 python.exe 로 등록합니다 (예약 실행 때 콘솔 창이 잠깐 뜹니다)"
 }
 }
 
@@ -506,8 +506,35 @@ $xml = $xml.Replace('{{PROJECT_DIR}}', (Xml $PSScriptRoot))
 $xml = $xml.Replace('{{COMMAND}}', (Xml $TaskCommand))
 $xml = $xml.Replace('{{ARGUMENTS}}', (Xml $TaskArguments))
 $xml = $xml.Replace('{{USER_SID}}', (Xml $sid))
+# The time of day comes from the config this install will actually run with —
+# read back rather than remembered, because on an upgrade the file already
+# exists and step 4 leaves it alone, so whatever the person set is what the
+# trigger has to say.
+#
+# Rejected rather than defaulted when it is unusable: a typo silently falling
+# back to 04:05 is a scheduled job firing at a time nobody chose, which is
+# exactly the kind of quiet wrongness this project is organised against.
+$scheduleTime = '04:05'
+$configText = Get-Content -Raw -Encoding UTF8 $ConfigPath
+$match = [regex]::Match($configText, '(?m)^\s*schedule_time\s*=\s*"(\d{1,2}):(\d{2})"')
+if ($match.Success) {
+    $hour = [int]$match.Groups[1].Value
+    $minute = [int]$match.Groups[2].Value
+    if ($hour -gt 23 -or $minute -gt 59) {
+        Die "[run] schedule_time 이 시각이 아닙니다: $($match.Groups[0].Value)"
+    }
+    $boundary = 4
+    $boundaryMatch = [regex]::Match($configText, '(?m)^\s*boundary_hour\s*=\s*(\d{1,2})')
+    if ($boundaryMatch.Success) { $boundary = [int]$boundaryMatch.Groups[1].Value }
+    if ($hour -lt $boundary) {
+        Die ("[run] schedule_time ($($match.Groups[1].Value):$($match.Groups[2].Value)) 이 " +
+             "[day] boundary_hour ($boundary) 보다 이릅니다. " +
+             "그 시각에는 보고할 하루가 아직 닫히지 않았습니다.")
+    }
+    $scheduleTime = '{0:d2}:{1:d2}' -f $hour, $minute
+}
 # Any past date works: only the time of day is read from a daily trigger.
-$xml = $xml.Replace('{{START_BOUNDARY}}', '2020-01-01T04:05:00')
+$xml = $xml.Replace('{{START_BOUNDARY}}', "2020-01-01T${scheduleTime}:00")
 
 $existing = Get-ScheduledTask -TaskName $label -ErrorAction SilentlyContinue
 if ($existing) {
@@ -519,7 +546,7 @@ try {
     Die "작업 등록 실패: $($_.Exception.Message)"
 }
 $info = Get-ScheduledTask -TaskName $label
-Ok "작업 '$label' 등록됨 (매일 04:05, 로그온 유형 $($info.Principal.LogonType))"
+Ok "작업 '$label' 등록됨 (매일 $scheduleTime, 로그온 유형 $($info.Principal.LogonType))"
 Ok "실행: $TaskCommand $TaskArguments"
 
 # --------------------------------------------------------------- shortcut ---
@@ -589,4 +616,4 @@ Write-Host "다음:"
 Write-Host "  $python summarize.py x y --preflight    무인 인증 확인 (실제 호출 1회)"
 Write-Host "  $python run_day.py $yesterday          어제 하루치 시험 실행"
 Write-Host ""
-Write-Host "첫 예약 실행은 내일 04:05 입니다. 그 전에 위 시험 실행으로 확인하세요."
+Write-Host "첫 예약 실행은 내일 $scheduleTime 입니다. 그 전에 위 시험 실행으로 확인하세요."

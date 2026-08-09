@@ -25,7 +25,7 @@ is found, that part is simply empty.
 ## How it runs
 
 ```
-04:05  launchd (macOS) · Task Scheduler (Windows)
+04:05  launchd (macOS) · Task Scheduler (Windows)   [run] schedule_time
   ①  decide which days are outstanding   compared against state/lastrun.json
   ②  collect                             transcripts + rollouts + commits + disk
   ③  refine                              roll up per project, drop navigation noise
@@ -35,8 +35,16 @@ is found, that part is simply empty.
   ⑦  upsert                              one row per date
 ```
 
-A logical day runs **04:00 to 04:00**, so work done at 2 a.m. belongs to the
-previous day. The job fires at 04:05, just after that day has closed.
+A logical day runs **04:00 to 04:00** (`[day] boundary_hour`), so work done at
+2 a.m. belongs to the previous day. The job fires at `[run] schedule_time`,
+which defaults to 04:05 — just after that day has closed. Anything at or after
+the boundary works and reports the same day; **later is often better**, since
+a machine asleep at four never runs while 09:00 catches it as its owner sits
+down. Earlier than the boundary is refused at install time: the day being
+reported would not have closed yet.
+
+For today's work before today has ended, there is a button — see
+[The window](#the-window).
 
 If the machine was asleep or off, the missed days are picked up on the next
 run. `launchd` collapses missed schedules into a single execution; Task
@@ -186,12 +194,32 @@ python3 doctor.py                  # is it working, and if not, why
 Re-running a date overwrites its row rather than adding one. If a report reads
 badly, run it again.
 
-### Windows: opening it after installing
+### The window
 
 **Look for "하루 마감 보고서" in the Start Menu** — `install.ps1` puts it there.
 It opens the status window: last run, next run, the last fourteen days as a
-strip, and buttons for diagnostics, regenerating a day, the logs, and Notion.
-It launches through `pythonw`, so no console trails behind it.
+strip, and a row of buttons. It launches through `pythonw`, so no console
+trails behind it.
+
+| Button | |
+|---|---|
+| 진단 실행 | `doctor`, in the pane below |
+| *date* 다시 생성 | rebuild the most recent closed day |
+| 오늘 지금까지 | **today, before it has ended** — see below |
+| 다른 날짜… | any day, typed in |
+| 예약 작업 등록 | re-register the scheduled task |
+| 로그 열기 / Notion 열기 | |
+
+**오늘 지금까지** is for leaving the office. It reports what has happened so
+far and is a snapshot, not the day — so it is deliberately **not** written to
+the ledger. That keeps the date on the outstanding list, the scheduled run
+produces the complete version once the day closes, and it replaces the
+snapshot rather than duplicating it. Press it again any time to refresh.
+
+The panels re-read the ledger whenever a command finishes; nothing needs
+reopening. **예약 작업 등록** exists because an upgrade removes the scheduled
+task and only the setup wizard used to put it back — the window now notices
+and re-registers by itself, and the button is there for when that fails.
 
 To start it by hand:
 

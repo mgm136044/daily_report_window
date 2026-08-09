@@ -512,11 +512,24 @@ def main() -> int:
                 # being judged.
                 for cause, message in detect_regression(state, date_str, result):
                     regressions.setdefault(cause, message)
-                state.setdefault("completed", {})[date_str] = {
-                    "at": started.isoformat(timespec="seconds"),
-                    **{k: v for k, v in result.items() if k != "date"},
-                }
-                write_state(state)
+                # A day still in progress is published but not recorded.
+                #
+                # Asking for today is a deliberate act — somebody pressing
+                # "오늘 지금까지" on the way out of the office — and the row it
+                # produces is a snapshot, not the day. Marking it complete
+                # would take that date off the pending list, so the scheduled
+                # run would skip it and the hours after the button press would
+                # never be reported by anything. Notion is keyed by date, so
+                # the complete version simply replaces the snapshot later.
+                if date_str == config.logical_date(datetime.now(config.local_tz())):
+                    say(f"{date_str}: 아직 진행 중인 날짜라 장부에 기록하지 않습니다 "
+                        f"(예약 실행이 하루가 닫힌 뒤 다시 만듭니다)")
+                else:
+                    state.setdefault("completed", {})[date_str] = {
+                        "at": started.isoformat(timespec="seconds"),
+                        **{k: v for k, v in result.items() if k != "date"},
+                    }
+                    write_state(state)
                 ok += 1
                 # Console output comes *after* the ledger, and never raises.
                 #

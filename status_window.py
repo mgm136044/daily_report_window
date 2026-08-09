@@ -96,10 +96,17 @@ def validate_requested_day(answer: str, today: str) -> tuple[str, str]:
     """Read a hand-typed date. Returns (day, "") or ("", why not).
 
     Module level, and returning a message rather than showing one, because
-    this is the part worth testing — the widgets are not. `today` is the
-    *logical* day, which is still in progress: a report for it would be built
-    from an unfinished day and would read as a quiet one rather than an
-    incomplete one, which is indistinguishable afterwards.
+    this is the part worth testing — the widgets are not.
+
+    The current logical day is allowed. It used to be refused, on the grounds
+    that a report built from an unfinished day reads afterwards like a quiet
+    one — true, and not the whole story: somebody leaving the office at six
+    wants today's report, and telling them to wait until 04:05 tomorrow is the
+    tool arguing with its own purpose. `run_day` keeps an in-progress day out
+    of the ledger, so the scheduled run still produces the complete version
+    later, and the caller warns before spending a model call on a partial day.
+
+    A day that has not started is still refused. There is nothing to collect.
     """
     answer = (answer or "").strip()
     if not answer:
@@ -108,14 +115,27 @@ def validate_requested_day(answer: str, today: str) -> tuple[str, str]:
         day = datetime.strptime(answer, "%Y-%m-%d").strftime("%Y-%m-%d")
     except ValueError:
         return "", f"날짜로 읽을 수 없습니다: {answer}\n\nYYYY-MM-DD 형식으로 넣어 주세요."
-    if day >= today:
+    if day > today:
         boundary = config.load()["day"]["boundary_hour"]
-        yesterday = (datetime.strptime(today, "%Y-%m-%d")
-                     - timedelta(days=1)).strftime("%Y-%m-%d")
-        return "", (f"{day} 은 아직 끝나지 않은 하루입니다.\n\n"
-                    f"하루 경계가 {boundary:02d}:00 이라 지금 진행 중인 날짜는 {today} 이고,\n"
-                    f"마감된 가장 최근 날짜는 {yesterday} 입니다.")
+        return "", (f"{day} 은 아직 시작되지도 않은 날입니다.\n\n"
+                    f"하루 경계가 {boundary:02d}:00 이라 지금 진행 중인 날짜는 {today} 입니다.")
     return day, ""
+
+
+def in_progress_warning(day: str, today: str) -> str:
+    """What to say before building a day that has not closed yet, or "".
+
+    Worth saying because the report is a snapshot: work done after this runs
+    is not in it. It is not worth *refusing* over, because pressing the button
+    again replaces the row.
+    """
+    if day != today:
+        return ""
+    boundary = config.load()["day"]["boundary_hour"]
+    return (f"{day} 은 아직 진행 중입니다 (하루 경계 {boundary:02d}:00).\n\n"
+            f"지금까지 수집된 것으로 보고서를 만듭니다. 이후에 한 일은 들어가지 않습니다.\n"
+            f"예약 실행은 이 날짜를 건너뛰지 않으므로, 하루가 닫히면 완전한 판이\n"
+            f"다시 만들어집니다. 지금 다시 눌러 갱신해도 됩니다.\n\n계속할까요?")
 
 
 def notion_url() -> str:
@@ -258,6 +278,11 @@ def build(root, tk, ttk, scrolledtext, simpledialog, messagebox):
         yesterday_button["widget"].configure(
             text=f"{current['yesterday']} 다시 생성")
         paint(summarize_state(run_day.read_state(), now))
+        # The scheduler panel is not in the ledger, and asking again is the
+        # whole point after `예약 작업 등록`: the task registered, the panel
+        # went on saying it had not, and the only thing wrong was that nobody
+        # re-read it. Reported as "등록했는데도 등록되어 있지 않다고 나온다".
+        probe_scheduler()
 
     def drain():
         while True:
@@ -355,10 +380,26 @@ def build(root, tk, ttk, scrolledtext, simpledialog, messagebox):
         if problem:
             messagebox.showerror("보고서 생성", problem, parent=root)
             return
+        warning = in_progress_warning(day, current["today"])
+        if warning and not messagebox.askokcancel("보고서 생성", warning, parent=root):
+            return
         run_command(run_argv(day), f"run {day}")
 
     def rebuild_yesterday():
         day = current["yesterday"]
+        run_command(run_argv(day), f"run {day}")
+
+    def build_today():
+        """One press, at the end of a working day, for what happened in it.
+
+        The date button beside this one is about *closed* days, which is the
+        job's own rhythm and not a person's. Somebody leaving at six wants
+        today.
+        """
+        day = current["today"]
+        if not messagebox.askokcancel(
+                "보고서 생성", in_progress_warning(day, day), parent=root):
+            return
         run_command(run_argv(day), f"run {day}")
 
     actions = [
@@ -368,6 +409,7 @@ def build(root, tk, ttk, scrolledtext, simpledialog, messagebox):
         # with the date baked in, this went stale the moment the window was
         # left open across the boundary hour.
         ("", rebuild_yesterday),
+        ("오늘 지금까지", lambda: build_today()),
         ("다른 날짜…", ask_for_a_date),
         ("예약 작업 등록",
          lambda: run_command(register_argv(), "install -NonInteractive")),
@@ -430,8 +472,18 @@ def build(root, tk, ttk, scrolledtext, simpledialog, messagebox):
             configured = False
         scheduler_result.put((f"등록되어 있지 않습니다  ({label})", configured))
 
-    refresh()          # first paint — the panels are built empty
-    threading.Thread(target=load_scheduler, daemon=True).start()
+    def probe_scheduler():
+        """Ask the scheduler again, off the main thread.
+
+        Called on every refresh rather than once at startup: registering the
+        task is one of the things this window can do, and a panel that only
+        ever answers the question it was asked at startup contradicts the
+        button beside it.
+        """
+        scheduler_line.set("조회 중…")
+        threading.Thread(target=load_scheduler, daemon=True).start()
+
+    refresh()          # first paint, which also starts the scheduler query
     root.after(POLL_MS, drain)
     return root
 

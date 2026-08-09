@@ -317,6 +317,19 @@ target_chars = 5000
 schema_language = "en"
 
 [run]
+# When the scheduled job fires, as HH:MM. The installer reads this and builds
+# the Task Scheduler trigger from it; changing it afterwards means re-running
+# the installer (or the status window's 예약 작업 등록 button).
+#
+# It has to be at or after `[day] boundary_hour`, because the run reports the
+# *previous* logical day and that day is not closed until the boundary passes.
+# 04:05 is the earliest sensible value for the default boundary of 04:00.
+#
+# Later is often better. A desktop that is off at four in the morning never
+# runs; 09:00 catches the machine as its owner sits down, and still reports
+# yesterday. The report is about a day that has already ended either way.
+schedule_time = "04:05"
+
 # Abort and notify if one day's processing exceeds this. A scheduled job that
 # hangs is worse than one that fails — no report, no error, no signal.
 #

@@ -1571,10 +1571,88 @@ def test_the_scheduler_panel_is_filled_from_the_main_thread():
     worker = source.split("def load_scheduler")[1].split("threading.Thread")[0]
     assert "scheduler_line.set(" not in worker, "작업 스레드가 위젯을 직접 건드린다"
     assert "scheduler_result.put(" in worker
-    assert "scheduler_line.set(scheduler_result.get_nowait())" in source, \
+    drain = source.split("def drain(")[1].split("def run_command")[0]
+    assert "scheduler_result.get_nowait()" in drain and "scheduler_line.set(" in drain, \
         "메인 스레드가 큐를 비우지 않는다"
     # and a registered task with an unreadable detail must still say something
     assert "상태를 읽지 못했습니다" in worker
+
+def test_an_upgrade_does_not_leave_the_install_unscheduled():
+    """The state an upgrade actually produces, and nothing announced it.
+
+    The uninstaller removes the scheduled task — correctly, since it is about
+    to delete the executable that task points at. Reinstalling then launches
+    the GUI, which finds the surviving config.toml and .env and opens the
+    status window instead of the wizard. Only the wizard runs install.ps1, and
+    only install.ps1 registers the task. So the upgrade finishes, looks
+    finished, and 04:05 never comes again. Measured on a real machine after
+    0.1.5 → 0.2.0: `등록 파일 없음`.
+
+    Re-registering restores what the person already chose, so it happens
+    without asking — but only when setup actually finished. An install that
+    never got a token belongs to the wizard, not to a repair.
+    """
+    source = open(os.path.join(ROOT, "status_window.py"), encoding="utf-8").read()
+    worker = source.split("def load_scheduler")[1].split("threading.Thread")[0]
+    assert "gui.is_configured()" in worker, "설정 안 끝난 설치까지 복구하려 든다"
+    assert "scheduler_result.put((f\"등록되어 있지 않습니다" in worker
+
+    drain = source.split("def drain(")[1].split("def run_command")[0]
+    assert "needs_repair" in drain and "register_argv()" in drain, \
+        "미등록을 감지하고도 아무것도 하지 않는다"
+    assert "repaired[\"done\"]" in drain, "매 폴링마다 재등록을 시도한다"
+    # and the manual route stays, because a repair that failed needs a retry
+    assert '("예약 작업 등록",' in source
+
+def test_the_window_repaints_when_a_command_finishes():
+    """A report generated from the buttons left every panel showing the state
+    from before it ran — the ledger had changed and nothing re-read it, so the
+    only way to see the result was to close the window and open it again."""
+    source = open(os.path.join(ROOT, "status_window.py"), encoding="utf-8").read()
+    drain = source.split("def drain(")[1].split("def run_command")[0]
+    finished = drain.split("if item is None:")[1].split("else:")[0]
+    assert "refresh()" in finished, "명령이 끝나도 패널을 다시 그리지 않는다"
+
+    refresh = source.split("def refresh(")[1].split("def drain(")[0]
+    assert "run_day.read_state()" in refresh, "장부를 다시 읽지 않는다"
+    assert "config.logical_date" in refresh, "논리적 오늘을 다시 계산하지 않는다"
+    # the button label is data, not a constant: a window left open across the
+    # boundary hour was offering to rebuild the wrong date
+    assert "yesterday_button" in refresh
+
+def test_purge_refuses_to_run_from_a_checkout():
+    """`--purge` deletes the data root. From a checkout that *is* the source
+    directory, so this would delete the repository — working tree, tests and
+    all. There is no reading of "uninstall" that means that."""
+    import paths
+    assert not paths.bundled(), "이 테스트의 전제가 깨졌다"
+    source = open(os.path.join(ROOT, "cli.py"), encoding="utf-8").read()
+    body = source.split("def purge_data")[1].split("def remove_installation")[0]
+    guard = body.index("paths.bundled()")
+    assert guard < body.index("shutil.rmtree"), "가드가 삭제보다 늦다"
+    assert "체크아웃에서는 --purge 를 거부합니다" in body
+    # and the flag has to actually reach it
+    assert 'purge = "--purge" in' in source
+    assert "return remove_installation(argv)" in source
+
+@windows_only
+def test_the_uninstaller_asks_before_keeping_the_token():
+    """Keeping the data was always deliberate — a reinstall then keeps its
+    Notion database instead of creating a second one. What was missing is that
+    nobody was told: `.env` holds a live token and `work/` holds verbatim
+    prompts, and the command that says "설정과 기록은 남겨 둡니다" runs hidden,
+    so that sentence has never been read by anyone."""
+    script = open(os.path.join(ROOT, "installer.iss"), encoding="utf-8-sig").read()
+    assert "function ShouldPurge" in script
+    assert 'Parameters: "uninstall --purge"' in script
+    assert 'Check: ShouldPurge' in script and 'Check: not ShouldPurge' in script
+    # asked once, or the question appears twice — Check: runs per entry
+    assert "PurgeAsked" in script
+    # keeping data is recoverable and deleting it is not, so No is the default
+    assert "MB_DEFBUTTON2" in script
+    # and it says what would actually go
+    for named in (".env", "config.toml", "프롬프트 원문"):
+        assert named in script, f"제거 안내에 {named} 가 없다"
 
 def test_status_summary_handles_an_empty_ledger():
     """A fresh install opens this window before anything has ever run."""

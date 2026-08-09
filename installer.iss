@@ -66,11 +66,47 @@ Filename: "{app}\{#GuiExe}"; Description: "설정 마법사 열기"; \
 ; Without this, uninstalling leaves a task pointing at an executable that no
 ; longer exists. It does not stop — it fires at 04:05 every night, fails to
 ; start, and records the failure, forever, in a place nobody thinks to look.
-Filename: "{app}\{#AppExe}"; Parameters: "uninstall"; \
+;
+; Two entries, one of which runs, chosen by what the person answers below.
+Filename: "{app}\{#AppExe}"; Parameters: "uninstall"; Check: not ShouldPurge; \
           Flags: runhidden waituntilterminated; RunOnceId: "RemoveScheduledTask"
+Filename: "{app}\{#AppExe}"; Parameters: "uninstall --purge"; Check: ShouldPurge; \
+          Flags: runhidden waituntilterminated; RunOnceId: "RemoveScheduledTaskAndData"
 
 [Code]
+var
+  PurgeAsked: Boolean;
+  PurgeChosen: Boolean;
+
 function InitializeSetup(): Boolean;
 begin
   Result := True;
+end;
+
+{ Uninstalling has always kept the data directory, deliberately, so that a
+  reinstall keeps its Notion database instead of creating a second one. What
+  was missing is that nobody was told: `.env` holds a live Notion token and
+  `work/` holds verbatim prompts, and both survived a Control Panel uninstall
+  with no notice. The command that says "설정과 기록은 남겨 둡니다" runs hidden,
+  so that sentence has never been read by anyone.
+
+  Asked once and cached, because Check: is evaluated for each entry and a
+  question asked twice reads as a bug. Defaults to No — keeping data is
+  recoverable, deleting it is not. }
+function ShouldPurge(): Boolean;
+begin
+  if not PurgeAsked then begin
+    PurgeAsked := True;
+    PurgeChosen := MsgBox(
+      '설정과 기록도 함께 삭제할까요?' + #13#10 + #13#10 +
+      '삭제하면 다음이 사라집니다:' + #13#10 +
+      '    · Notion 연결 토큰 (.env)' + #13#10 +
+      '    · config.toml 설정' + #13#10 +
+      '    · 실행 이력, 수집 산출물, 지난 보고서' + #13#10 +
+      '      (수집 산출물에는 프롬프트 원문이 들어 있습니다)' + #13#10 + #13#10 +
+      '[아니요] 를 고르면 그대로 남습니다. 다시 설치하면 기존 Notion' + #13#10 +
+      '데이터베이스를 이어서 쓰고, 설정을 다시 하지 않아도 됩니다.',
+      mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES;
+  end;
+  Result := PurgeChosen;
 end;

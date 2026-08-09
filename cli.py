@@ -33,14 +33,52 @@ USAGE = """사용법: daily-report [명령] [인자…]
   run [YYYY-MM-DD]   밀린 날짜 전부, 또는 특정 날짜 (기본 명령)
   doctor [--full]    상태 점검
   install            설정·작업 등록·바로 가기 (설치기가 부른다)
-  uninstall          예약 작업·바로 가기 제거 (제거기가 부른다)
+  uninstall [--purge]  예약 작업·바로 가기 제거 (제거기가 부른다)
+                     --purge 는 설정·자격증명·기록까지 지운다
   setup-db           노션 데이터베이스 생성 (설치 중 1회)
   collect YYYY-MM-DD [out.json]
   summarize <digest.json> <report.md> | --preflight
 """
 
 
-def remove_installation() -> int:
+def purge_data() -> int:
+    """Delete the data root — config, credentials, ledger, collected material.
+
+    Only reachable through `uninstall --purge`, which the uninstaller asks
+    about explicitly. Uninstalling has always kept this directory, on purpose,
+    so a reinstall keeps its Notion database instead of creating a second one.
+    What was missing is that nobody was told: the `.env` holds a live Notion
+    token and `work/` holds verbatim prompts, and both survived a Control
+    Panel uninstall with no notice at all.
+
+    **Refuses outside a packaged install.** From a checkout the data root is
+    the source directory, so this would delete the repository — the working
+    tree, the tests, everything. There is no situation where that is what
+    somebody meant.
+    """
+    import shutil
+
+    import paths
+
+    root = paths.data_root()
+    if not paths.bundled():
+        print("체크아웃에서는 --purge 를 거부합니다.\n"
+              f"  데이터 루트가 소스 디렉터리입니다: {root}", file=sys.stderr)
+        return 2
+    if not os.path.isdir(root):
+        print(f"지울 데이터가 없습니다: {root}")
+        return 0
+    try:
+        shutil.rmtree(root)
+    except OSError as error:
+        print(f"데이터를 지우지 못했습니다: {error}\n  직접 지우세요: {root}",
+              file=sys.stderr)
+        return 1
+    print(f"설정과 기록을 삭제했습니다: {root}")
+    return 0
+
+
+def remove_installation(argv: list[str] | None = None) -> int:
     """Take the scheduled task and the shortcut away.
 
     Deleting the program without this leaves a task pointing at an executable
@@ -48,12 +86,14 @@ def remove_installation() -> int:
     fails to start, and records the failure, forever. Task Scheduler shows a
     red entry nobody can explain and nothing else does.
 
-    Deliberately leaves the data alone. `config.toml`, `.env` and the ledger
-    are the user's, and a reinstall that finds them intact keeps its Notion
-    database rather than creating a second one.
+    Leaves the data alone unless `--purge` says otherwise. `config.toml`,
+    `.env` and the ledger are the user's, and a reinstall that finds them
+    intact keeps its Notion database rather than creating a second one.
     """
     import config
     import subprocess
+
+    purge = "--purge" in (argv or [])
 
     if os.name != "nt":
         print("uninstall 명령은 Windows 전용입니다.", file=sys.stderr)
@@ -95,6 +135,8 @@ def remove_installation() -> int:
          "-EncodedCommand", encoded],
         capture_output=True)
     print(result.stdout.decode("utf-8", errors="replace").strip())
+    if purge:
+        return purge_data()
     print(f"설정과 기록은 남겨 둡니다: {__import__('paths').data_root()}")
     return 0
 
@@ -185,7 +227,7 @@ def main() -> int:
     if command == "install":
         return run_installer(argv)
     if command == "uninstall":
-        return remove_installation()
+        return remove_installation(argv)
     print(USAGE, file=sys.stderr)
     return 2
 

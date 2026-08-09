@@ -146,7 +146,6 @@ def build(root, tk, ttk, scrolledtext, simpledialog, messagebox):
 
     label = config.load().get("launchd", {}).get("label", "")
     today = config.logical_date(datetime.now(config.local_tz()))
-    summary = summarize_state(run_day.read_state(), today)
 
     root.title("하루 마감 보고서")
     root.minsize(560, 460)
@@ -163,36 +162,54 @@ def build(root, tk, ttk, scrolledtext, simpledialog, messagebox):
     ttk.Label(scheduler, textvariable=scheduler_line, font=font,
               justify="left").pack(anchor="w")
 
+    # Everything below reads the ledger, and the ledger changes while this
+    # window is open — a report generated from the buttons used to leave the
+    # panels showing the state from before it ran, so the only way to see the
+    # result was to close the window and open it again. The widgets are
+    # therefore built empty and filled by `refresh()`, which is also what runs
+    # when a command finishes.
+
     # --- last run ----------------------------------------------------------
     last = ttk.LabelFrame(outer, text=" 마지막 산출 ", padding=10)
     last.pack(fill="x", pady=(10, 0))
-    if summary["last_run"]:
-        entry = summary["last_run"]
-        text = (f"{entry['date']}  ·  프로젝트 {entry.get('projects', '?')}"
-                f"  세션 {entry.get('sessions', '?')}"
-                f"  파일 {entry.get('files', '?')}"
-                f"  커밋 {entry.get('commits', '?')}")
-    else:
-        text = "아직 생성된 보고서가 없습니다"
-    ttk.Label(last, text=text, font=font).pack(anchor="w")
+    last_line = tk.StringVar()
+    ttk.Label(last, textvariable=last_line, font=font).pack(anchor="w")
 
     # --- 14 day strip ------------------------------------------------------
     strip = ttk.LabelFrame(outer, text=f" 최근 {STRIP_DAYS}일 ", padding=10)
     strip.pack(fill="x", pady=(10, 0))
     row = ttk.Frame(strip)
     row.pack(anchor="w")
-    for day, status in summary["days"]:
-        cell = tk.Label(row, text=MARK[status], fg=COLOUR[status],
-                        font=(mono[0], 14), padx=1)
-        cell.pack(side="left")
-        _tooltip(tk, cell, f"{day}  {status}")
     ttk.Label(strip, text="■ 정상   ▨ 활동 없음   □ 없음/실패   · 설치 이전",
               font=(font[0], 9), foreground="#666").pack(anchor="w", pady=(6, 0))
 
     # --- warnings ----------------------------------------------------------
-    if summary["regressions"] or summary["pending"]:
-        warn = ttk.LabelFrame(outer, text=" 확인 필요 ", padding=10)
-        warn.pack(fill="x", pady=(10, 0))
+    # Always created, never conditionally, because a warning can appear while
+    # the window is open — a frame that does not exist yet cannot be filled in
+    # from a refresh without repacking everything below it.
+    warn = ttk.LabelFrame(outer, text=" 확인 필요 ", padding=10)
+    warn_packed = {"shown": False}
+
+    def paint(summary: dict) -> None:
+        """Put one reading of the ledger on screen."""
+        entry = summary["last_run"]
+        last_line.set(
+            f"{entry['date']}  ·  프로젝트 {entry.get('projects', '?')}"
+            f"  세션 {entry.get('sessions', '?')}"
+            f"  파일 {entry.get('files', '?')}"
+            f"  커밋 {entry.get('commits', '?')}"
+            if entry else "아직 생성된 보고서가 없습니다")
+
+        for cell in row.winfo_children():
+            cell.destroy()
+        for day, status in summary["days"]:
+            cell = tk.Label(row, text=MARK[status], fg=COLOUR[status],
+                            font=(mono[0], 14), padx=1)
+            cell.pack(side="left")
+            _tooltip(tk, cell, f"{day}  {status}")
+
+        for child in warn.winfo_children():
+            child.destroy()
         for message in summary["regressions"]:
             ttk.Label(warn, text=f"⚠  {message}", font=font,
                       foreground="#b8860b", wraplength=500,
@@ -200,6 +217,12 @@ def build(root, tk, ttk, scrolledtext, simpledialog, messagebox):
         if summary["pending"]:
             ttk.Label(warn, text=f"⚠  밀린 날짜 {len(summary['pending'])}일",
                       font=font, foreground="#b8860b").pack(anchor="w")
+        wanted = bool(summary["regressions"] or summary["pending"])
+        if wanted and not warn_packed["shown"]:
+            warn.pack(fill="x", pady=(10, 0), before=output)
+        elif not wanted and warn_packed["shown"]:
+            warn.pack_forget()
+        warn_packed["shown"] = wanted
 
     # --- output ------------------------------------------------------------
     output = scrolledtext.ScrolledText(outer, height=10, font=mono, wrap="word")
@@ -209,12 +232,32 @@ def build(root, tk, ttk, scrolledtext, simpledialog, messagebox):
     lines: queue.Queue = queue.Queue()
     scheduler_result: queue.Queue = queue.Queue()
     running = {"busy": False}
+    # Recomputed by refresh() rather than captured once — see its docstring.
+    current = {"today": today, "yesterday": ""}
+    yesterday_button: dict = {"widget": None}
+    repaired = {"done": False}
 
     def emit(text):
         output.configure(state="normal")
         output.insert("end", text + "\n")
         output.see("end")
         output.configure(state="disabled")
+
+    def refresh():
+        """Re-read the ledger and repaint.
+
+        `today` is recomputed too. It is the *logical* day, so a window left
+        open across the 04:00 boundary was drawing the wrong fortnight and
+        offering to rebuild the wrong date — which mattered more once a run
+        could be started from here.
+        """
+        now = config.logical_date(datetime.now(config.local_tz()))
+        current["today"] = now
+        current["yesterday"] = (datetime.strptime(now, "%Y-%m-%d")
+                                - timedelta(days=1)).strftime("%Y-%m-%d")
+        yesterday_button["widget"].configure(
+            text=f"{current['yesterday']} 다시 생성")
+        paint(summarize_state(run_day.read_state(), now))
 
     def drain():
         while True:
@@ -226,12 +269,22 @@ def build(root, tk, ttk, scrolledtext, simpledialog, messagebox):
                 running["busy"] = False
                 for button in buttons:
                     button.state(["!disabled"])
+                # A finished command is the only thing that changes the ledger
+                # while this window is open. Without this the panels kept
+                # showing the state from before the run, and the only way to
+                # see what had just been produced was to close and reopen.
+                refresh()
             else:
                 emit(item)
         # Same trip back to the main thread for the scheduler worker, which
         # used to write its StringVar from the thread it ran on.
         try:
-            scheduler_line.set(scheduler_result.get_nowait())
+            text, needs_repair = scheduler_result.get_nowait()
+            scheduler_line.set(text)
+            if needs_repair and not repaired["done"]:
+                repaired["done"] = True
+                emit("예약 작업이 없습니다 — 다시 등록합니다.")
+                run_command(register_argv(), "install -NonInteractive")
         except queue.Empty:
             pass
         root.after(POLL_MS, drain)
@@ -267,12 +320,22 @@ def build(root, tk, ttk, scrolledtext, simpledialog, messagebox):
     bar = ttk.Frame(outer)
     bar.pack(fill="x", pady=(10, 0))
 
-    yesterday = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
-
     def run_argv(day: str) -> list[str]:
         """How to ask this install to build one day's report."""
         return (paths.command_argv("run", day) if paths.bundled()
                 else paths.command_argv("run_day", day))
+
+    def register_argv() -> list[str]:
+        """How to (re)register the scheduled task.
+
+        There is no `install.py`, so `command_argv` only answers this for a
+        packaged build; from a checkout the installer is the PowerShell script
+        itself.
+        """
+        if paths.bundled():
+            return paths.command_argv("install", "-NonInteractive")
+        return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-File", paths.resource("install.ps1"), "-NonInteractive"]
 
     def ask_for_a_date():
         """Build any closed day, not only the most recent one.
@@ -285,21 +348,29 @@ def build(root, tk, ttk, scrolledtext, simpledialog, messagebox):
         """
         answer = simpledialog.askstring(
             "보고서 생성", "생성할 날짜 (YYYY-MM-DD)",
-            initialvalue=yesterday, parent=root)
+            initialvalue=current["yesterday"], parent=root)
         if answer is None:
             return
-        day, problem = validate_requested_day(answer, today)
+        day, problem = validate_requested_day(answer, current["today"])
         if problem:
             messagebox.showerror("보고서 생성", problem, parent=root)
             return
         run_command(run_argv(day), f"run {day}")
 
+    def rebuild_yesterday():
+        day = current["yesterday"]
+        run_command(run_argv(day), f"run {day}")
+
     actions = [
         ("진단 실행",
          lambda: run_command(paths.command_argv("doctor"), "doctor")),
-        (f"{yesterday} 다시 생성",
-         lambda: run_command(run_argv(yesterday), f"run {yesterday}")),
+        # Labelled by refresh(), which knows the current logical day. Built
+        # with the date baked in, this went stale the moment the window was
+        # left open across the boundary hour.
+        ("", rebuild_yesterday),
         ("다른 날짜…", ask_for_a_date),
+        ("예약 작업 등록",
+         lambda: run_command(register_argv(), "install -NonInteractive")),
         ("로그 열기", lambda: open_in_file_manager(run_day.LOG_DIR)),
     ]
     url = notion_url()
@@ -311,6 +382,8 @@ def build(root, tk, ttk, scrolledtext, simpledialog, messagebox):
         button = ttk.Button(bar, text=text, command=command)
         button.pack(side="left", padx=(0, 6))
         buttons.append(button)
+        if command is rebuild_yesterday:
+            yesterday_button["widget"] = button
 
     # --- scheduler status, off the main thread (it shells out to PowerShell) -
     #
@@ -322,19 +395,42 @@ def build(root, tk, ttk, scrolledtext, simpledialog, messagebox):
     # the exact failure this window exists to prevent.
     def load_scheduler():
         if not label:
-            scheduler_result.put("config.toml 이 없어 작업 이름을 모릅니다")
+            scheduler_result.put(("config.toml 이 없어 작업 이름을 모릅니다", False))
             return
         try:
             registered, detail = platform_support.PLATFORM.scheduler_status(label)
         except Exception as error:  # a diagnostic window must not die diagnosing
-            scheduler_result.put(f"조회 실패: {error}")
+            scheduler_result.put((f"조회 실패: {error}", False))
             return
-        # An empty detail would leave the panel blank and say nothing, so the
-        # absence is reported rather than rendered.
-        scheduler_result.put(
-            (detail.strip() or f"등록되어 있으나 상태를 읽지 못했습니다  ({label})")
-            if registered else f"등록되어 있지 않습니다  ({label})")
+        if registered:
+            # An empty detail would leave the panel blank and say nothing, so
+            # the absence is reported rather than rendered.
+            scheduler_result.put(
+                (detail.strip() or f"등록되어 있으나 상태를 읽지 못했습니다  ({label})",
+                 False))
+            return
 
+        # Configured but unscheduled is the shape an upgrade leaves behind, and
+        # it is the one state where nothing happens and nothing says so.
+        #
+        # The uninstaller removes the task — correctly, since it is about to
+        # delete the executable it points at. Reinstalling then launches the
+        # GUI, which finds config.toml and a filled .env and opens *this*
+        # window rather than the wizard. Only the wizard runs install.ps1, and
+        # only install.ps1 registers the task. So the upgrade completes, looks
+        # finished, and 04:05 never comes again.
+        #
+        # Re-registering restores what the person already chose; it is not a
+        # new decision, so it does not need asking about. Nothing is repaired
+        # when setup never finished — that case belongs to the wizard.
+        try:
+            import gui
+            configured = gui.is_configured()
+        except Exception:
+            configured = False
+        scheduler_result.put((f"등록되어 있지 않습니다  ({label})", configured))
+
+    refresh()          # first paint — the panels are built empty
     threading.Thread(target=load_scheduler, daemon=True).start()
     root.after(POLL_MS, drain)
     return root

@@ -203,6 +203,7 @@ trails behind it.
 
 | Button | |
 |---|---|
+| 설정… | summary engine (claude/codex), Codex model, schedule time |
 | 진단 실행 | `doctor`, in the pane below |
 | *date* 다시 생성 | rebuild the most recent closed day |
 | 오늘 지금까지 | **today, before it has ended** — see below |
@@ -287,6 +288,14 @@ engine = "claude"   # or "codex"
 codex_bin = ""      # full path, if it cannot be found automatically
 codex_model = ""    # empty follows whatever ~/.codex/config.toml selects
 ```
+
+No editor required — the status window's **설정…** button sets the engine, the
+Codex model and the schedule time. It parses the result before replacing
+anything, keeps a `config.toml.bak`, and leaves every comment where it was.
+
+The installer looks for both CLIs. **Claude wins when both are present**,
+being the path this project has the most hours on; Codex is selected when it
+is the only one there.
 
 | | Claude Code | Codex |
 |---|---|---|

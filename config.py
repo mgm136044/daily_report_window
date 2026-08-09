@@ -208,6 +208,82 @@ def missing_keys(config_path: str = "", example_path: str = "") -> list[str]:
     return merge_missing_keys(current, example)[1]
 
 
+def set_values(text: str, changes: dict[tuple[str, str], str]) -> tuple[str, list[str]]:
+    """Rewrite the value of existing single-line keys, in place.
+
+    Surgical on purpose. Re-serialising the whole document from a parsed dict
+    is the obvious way and it drops every comment in the file — and this
+    configuration is mostly comments, because it is meant to be read by
+    whoever has to change it.
+
+    `changes` maps (section, key) to the TOML literal to write, so the caller
+    decides how a value is quoted. Keys that are absent are reported rather
+    than created: `merge_missing_keys` is what adds a setting, and it brings
+    the explanation with it.
+    """
+    lines, changed, section = text.splitlines(), [], ""
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        header = re.match(r"\[(\[?)([^\]]+)\]\]?\s*$", stripped)
+        if header:
+            section = "" if header.group(1) else header.group(2)
+            continue
+        name = re.match(r"([A-Za-z0-9_\-]+)\s*=", stripped)
+        if not name or not section:
+            continue
+        wanted = changes.get((section, name.group(1)))
+        if wanted is None:
+            continue
+        indent = line[:len(line) - len(line.lstrip())]
+        lines[index] = f"{indent}{name.group(1)} = {wanted}"
+        changed.append(f"{section}.{name.group(1)}")
+    result = "\n".join(lines)
+    if text.endswith("\n") or not text:
+        result += "\n"
+    return result, changed
+
+
+def toml_string(value: str) -> str:
+    """A TOML basic string. Windows paths are full of backslashes."""
+    escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def write_settings(changes: dict[tuple[str, str], str],
+                   config_path: str = "") -> tuple[list[str], str]:
+    """Apply `changes` to config.toml. Returns (changed keys, message).
+
+    Same contract as upgrade_file: parse before replacing, keep a `.bak`, and
+    say plainly when nothing could be done.
+    """
+    config_path = config_path or CONFIG_PATH
+    if not os.path.exists(config_path):
+        return [], f"config.toml 이 없습니다: {config_path}"
+    with open(config_path, encoding="utf-8") as handle:
+        current = handle.read()
+    updated, changed = set_values(current, changes)
+    missing = [f"{s}.{k}" for (s, k) in changes
+               if f"{s}.{k}" not in changed]
+    if not changed:
+        return [], (f"고칠 항목을 찾지 못했습니다: {', '.join(missing)}\n"
+                    f"  daily-report config-upgrade 로 먼저 추가하세요")
+    try:
+        tomllib.loads(updated)
+    except tomllib.TOMLDecodeError as error:
+        return [], f"수정 결과가 TOML 로 읽히지 않아 중단했습니다: {error}"
+
+    backup = config_path + ".bak"
+    with open(backup, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(current)
+    with open(config_path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(updated)
+    import platform_support  # noqa: PLC0415
+    for path in (config_path, backup):
+        platform_support.PLATFORM.restrict(path, is_dir=False)
+    note = f" (찾지 못함: {', '.join(missing)})" if missing else ""
+    return changed, f"{len(changed)}개 항목을 저장했습니다{note}"
+
+
 def upgrade_file(config_path: str = "", example_path: str = "") -> tuple[list[str], str]:
     """Write the missing settings into config.toml. Returns (added, message).
 

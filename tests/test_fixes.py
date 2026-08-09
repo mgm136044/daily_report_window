@@ -1848,6 +1848,83 @@ def test_the_installer_carries_settings_over_on_an_upgrade():
     branch = script.split("if (Test-Path $ConfigPath) {")[1].split("} else {")[0]
     assert "config-upgrade" in branch, "업그레이드가 새 설정을 옮기지 않는다"
 
+def test_a_setting_can_be_changed_without_losing_the_file_around_it():
+    """`[summary] engine` shipped in 0.2.0 and could only be set by editing
+    config.toml, so "이거 요약 모델 설정 못해? 무조건 claude야?" was answered
+    yes-but-not-from-here, which is the same as no.
+
+    Rewriting the value in place rather than re-serialising a parsed document:
+    the obvious way drops every comment in the file, and this configuration is
+    mostly comments because it exists to be read by whoever has to change it.
+    """
+    import tomllib
+    example = open(os.path.join(ROOT, "config.windows.example.toml"),
+                   encoding="utf-8").read()
+    updated, changed = config.set_values(example, {
+        ("summary", "engine"): config.toml_string("codex"),
+        ("summary", "codex_model"): config.toml_string("gpt-5.6-luna"),
+        ("run", "schedule_time"): config.toml_string("09:00"),
+    })
+    assert set(changed) == {"summary.engine", "summary.codex_model",
+                            "run.schedule_time"}
+    before, after = tomllib.loads(example), tomllib.loads(updated)
+    assert after["summary"]["engine"] == "codex"
+    assert after["run"]["schedule_time"] == "09:00"
+    assert example.count("#") == updated.count("#"), "주석이 사라졌다"
+
+    # nothing else moved
+    for section, values in before.items():
+        if not isinstance(values, dict):
+            continue
+        for key, value in values.items():
+            if (section, key) in {("summary", "engine"), ("summary", "codex_model"),
+                                  ("run", "schedule_time")}:
+                continue
+            assert after[section][key] == value, f"{section}.{key} 가 바뀌었다"
+
+def test_a_windows_path_survives_being_written_back():
+    """codex_bin is a path full of backslashes, and TOML reads `\\U` as an
+    escape — an unquoted one produces a file that will not parse."""
+    import tomllib
+    literal = config.toml_string(r"C:\Users\x\OpenAI\Codex\bin\codex.exe")
+    parsed = tomllib.loads(f"[summary]\ncodex_bin = {literal}\n")
+    assert parsed["summary"]["codex_bin"] == r"C:\Users\x\OpenAI\Codex\bin\codex.exe"
+
+def test_an_absent_setting_is_reported_rather_than_invented():
+    """Adding a key is `merge_missing_keys`, which brings the comment that
+    explains it. A bare key appended by the settings window would not."""
+    text = "[summary]\nengine = \"claude\"\n"
+    updated, changed = config.set_values(
+        text, {("summary", "codex_model"): config.toml_string("x")})
+    assert changed == [] and updated == text
+
+def test_the_window_offers_the_engine_choice():
+    source = open(os.path.join(ROOT, "status_window.py"), encoding="utf-8").read()
+    assert '("설정…"' in source, "설정 메뉴가 없다"
+    body = source.split("def open_settings")[1].split("    actions = [")[0]
+    for needed in ("engine", "codex_model", "schedule_time", "config.write_settings"):
+        assert needed in body, f"설정 창에 {needed} 가 없다"
+    # the process-wide cache would otherwise keep showing the old value
+    assert "config.load.cache_clear()" in body
+
+def test_the_window_and_the_installer_agree_on_a_schedule_time():
+    """A value the window accepts and the installer then refuses is worse than
+    one the window refused first."""
+    import status_window as sw
+    original = config.load()["day"]["boundary_hour"]
+    try:
+        config.load()["day"]["boundary_hour"] = 4
+        assert sw.validate_schedule_time("09:00") == ("09:00", "")
+        assert sw.validate_schedule_time("4:05") == ("04:05", ""), "정규화되지 않는다"
+        for bad in ("03:00", "25:00", "09:70", "abc", "", "0900"):
+            value, problem = sw.validate_schedule_time(bad)
+            assert not value and problem, f"통과됨: {bad!r}"
+        # the installer refuses the same thing, in the same terms
+        script = open(os.path.join(ROOT, "install.ps1"), encoding="utf-8-sig").read()
+        assert "보다 이릅니다" in script
+    finally:
+        config.load()["day"]["boundary_hour"] = original
+
 def test_the_installer_script_has_no_stray_section_tag():
     """ISCC reads any line whose first non-blank characters are `[...]` as a
     section tag — including inside a `{ }` Pascal comment, because the

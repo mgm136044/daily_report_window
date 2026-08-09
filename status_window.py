@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -136,6 +137,31 @@ def in_progress_warning(day: str, today: str) -> str:
             f"지금까지 수집된 것으로 보고서를 만듭니다. 이후에 한 일은 들어가지 않습니다.\n"
             f"예약 실행은 이 날짜를 건너뛰지 않으므로, 하루가 닫히면 완전한 판이\n"
             f"다시 만들어집니다. 지금 다시 눌러 갱신해도 됩니다.\n\n계속할까요?")
+
+
+ENGINE_LABELS = {"claude": "Claude Code  (claude -p)",
+                 "codex": "Codex  (codex exec)"}
+
+
+def validate_schedule_time(value: str) -> tuple[str, str]:
+    """Read a hand-typed HH:MM. Returns (normalised, "") or ("", why not).
+
+    The same rule the installer applies, in the same words, because a value
+    the window accepts and the installer then refuses is worse than one the
+    window refused first.
+    """
+    value = (value or "").strip()
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", value)
+    if not match:
+        return "", f"HH:MM 형식이 아닙니다: {value}"
+    hour, minute = int(match.group(1)), int(match.group(2))
+    if hour > 23 or minute > 59:
+        return "", f"시각이 아닙니다: {value}"
+    boundary = config.load()["day"]["boundary_hour"]
+    if hour < boundary:
+        return "", (f"{hour:02d}:{minute:02d} 은 하루 경계({boundary:02d}:00)보다 이릅니다.\n\n"
+                    f"그 시각에는 보고할 하루가 아직 닫히지 않았습니다.")
+    return f"{hour:02d}:{minute:02d}", ""
 
 
 def notion_url() -> str:
@@ -402,7 +428,79 @@ def build(root, tk, ttk, scrolledtext, simpledialog, messagebox):
             return
         run_command(run_argv(day), f"run {day}")
 
+    def open_settings():
+        """The three settings people actually change, without a text editor.
+
+        `[summary] engine` shipped in 0.2.0 and could only be set by editing
+        config.toml, so the answer to "이거 요약 모델 설정 못해? 무조건
+        claude야?" was yes-but-not-from-here, which is the same as no. The
+        window writes the file the same way `config-upgrade` does: parse
+        first, keep a `.bak`, leave every comment where it was.
+        """
+        cfg = config.load()
+        summary = cfg.get("summary", {})
+        dialog = tk.Toplevel(root)
+        dialog.title("설정")
+        dialog.transient(root)
+        dialog.resizable(False, False)
+        body = ttk.Frame(dialog, padding=14)
+        body.pack(fill="both", expand=True)
+
+        engine = tk.StringVar(value=(summary.get("engine") or "claude"))
+        box = ttk.LabelFrame(body, text=" 요약 엔진 ", padding=10)
+        box.pack(fill="x")
+        for name, text in ENGINE_LABELS.items():
+            ttk.Radiobutton(box, text=text, value=name, variable=engine,
+                            takefocus=False).pack(anchor="w")
+        ttk.Label(box, text="보고서를 쓰는 CLI 입니다. 수집은 어느 쪽이든 같습니다.",
+                  font=(font[0], 9), foreground="#666").pack(anchor="w", pady=(6, 0))
+
+        model = tk.StringVar(value=(summary.get("codex_model") or ""))
+        model_box = ttk.LabelFrame(body, text=" Codex 모델 ", padding=10)
+        model_box.pack(fill="x", pady=(10, 0))
+        ttk.Entry(model_box, textvariable=model, width=34).pack(anchor="w")
+        ttk.Label(model_box, text="비우면 ~/.codex/config.toml 의 설정을 따릅니다.",
+                  font=(font[0], 9), foreground="#666").pack(anchor="w", pady=(6, 0))
+
+        when = tk.StringVar(value=(cfg.get("run", {}).get("schedule_time") or "04:05"))
+        when_box = ttk.LabelFrame(body, text=" 예약 실행 시각 ", padding=10)
+        when_box.pack(fill="x", pady=(10, 0))
+        ttk.Entry(when_box, textvariable=when, width=10).pack(anchor="w")
+        ttk.Label(when_box,
+                  text=f"HH:MM. 하루 경계({cfg['day']['boundary_hour']:02d}:00) 이후여야 합니다.\n"
+                       f"저장한 뒤 '예약 작업 등록' 을 눌러야 반영됩니다.",
+                  font=(font[0], 9), foreground="#666",
+                  justify="left").pack(anchor="w", pady=(6, 0))
+
+        def save():
+            schedule, problem = validate_schedule_time(when.get())
+            if problem:
+                messagebox.showerror("설정", problem, parent=dialog)
+                return
+            changed, message = config.write_settings({
+                ("summary", "engine"): config.toml_string(engine.get()),
+                ("summary", "codex_model"): config.toml_string(model.get().strip()),
+                ("run", "schedule_time"): config.toml_string(schedule),
+            })
+            dialog.destroy()
+            emit(f"$ 설정 저장 — {message}")
+            for name in changed:
+                emit(f"  {name}")
+            if changed:
+                # load() is cached for the process; the file is the truth and
+                # the next run reads it, but this window would go on showing
+                # what it read at startup.
+                config.load.cache_clear()
+                emit("예약 시각을 바꿨다면 '예약 작업 등록' 을 눌러 다시 등록하세요.")
+
+        buttons = ttk.Frame(body)
+        buttons.pack(fill="x", pady=(14, 0))
+        ttk.Button(buttons, text="저장", command=save).pack(side="left")
+        ttk.Button(buttons, text="취소", command=dialog.destroy).pack(side="left", padx=(6, 0))
+        dialog.grab_set()
+
     actions = [
+        ("설정…", open_settings),
         ("진단 실행",
          lambda: run_command(paths.command_argv("doctor"), "doctor")),
         # Labelled by refresh(), which knows the current logical day. Built

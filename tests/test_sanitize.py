@@ -273,3 +273,71 @@ def test_checker_skips_sanitizer_heuristics():
     kinds = {k for k, _ in chk.load_credential_patterns()}
     assert "credential:key_assignment" not in kinds
     assert "credential:notion_token" in kinds, "정밀 패턴까지 빠지면 안 된다"
+
+
+# --- 독립 감사에서 나온 공백 ---------------------------------------------
+
+def test_a_home_directory_is_shortened_rather_than_published():
+    """A home directory is a person's name.
+
+    `C:\\Users\\hongildong\\…` identifies its owner as surely as an email
+    address, and file paths are in the digest deliberately — the report is
+    about which files were touched, so removing the paths would remove the
+    report. The prefix is shortened instead: every part that carries meaning
+    survives and the part that carries an identity does not.
+
+    The prompt template already asks the model to abbreviate paths this way.
+    Asking is not doing — a model that ignores it writes the account name into
+    the Notion row and nothing downstream would notice.
+    """
+    home = os.path.expanduser("~")
+    account = os.path.basename(home)
+    for path in (os.path.join(home, "projects", "app", "main.py"),
+                 home.replace("\\", "/") + "/projects/app/main.py"):
+        cleaned, found = sanitize.redact(path)
+        assert account not in cleaned, f"계정명이 남음: {cleaned}"
+        assert cleaned.startswith("~"), cleaned
+        assert "projects" in cleaned and "main.py" in cleaned, "경로가 쓸모없어졌다"
+        assert found["home_path"] >= 1
+
+    # dict keys are project paths, and those are what become Notion properties
+    payload = {os.path.join(home, "clients", "acme"): {"files": [
+        os.path.join(home, "clients", "acme", "x.md")]}}
+    cleaned, _ = sanitize.redact_structure(payload)
+    assert account not in json.dumps(cleaned, ensure_ascii=False)
+
+
+def test_the_shapes_a_developer_machine_actually_holds():
+    """`.npmrc` is already treated as a file too sensitive to name in a report;
+    the token that lives in it was not detected at all."""
+    samples = {
+        "npm_token": "npm_" + "a" * 36,
+        "docker_pat": "dckr_pat_" + "b" * 24,
+        "google_oauth_secret": "GOCSPX-" + "c" * 24,
+        "sendgrid_key": "SG." + "d" * 22 + "." + "e" * 22,
+        "notion_uuid": "3b7d7cd3-205c-8101-a5c9-e4c570813a9b",
+        "notion_id": "3b7d7cd3205c8101a5c9e4c570813a9b",
+    }
+    for kind, text in samples.items():
+        cleaned, found = sanitize.redact(text)
+        assert kind in found, f"{kind} 미탐지: {text}"
+        assert text not in cleaned
+
+    # a commit hash is forty characters and must survive — the report is about
+    # commits, and `\b…{32}\b` does not match inside a longer run of hex
+    sha = "a1b2c3d4" * 5
+    cleaned, found = sanitize.redact(sha)
+    assert cleaned == sha and not found, f"커밋 해시가 훼손됨: {cleaned}"
+
+
+def test_korean_identifiers_are_caught_in_the_spellings_people_use():
+    """A detector covering one spelling covers the one nobody worried about."""
+    for text in ("901231-1234567", "901231 1234567"):
+        _, found = sanitize.redact(text)
+        assert "krn_rrn" in found, f"주민번호 미탐지: {text}"
+    for text in ("010-1234-5678", "01012345678", "+82-10-1234-5678"):
+        _, found = sanitize.redact(text)
+        assert "krn_phone" in found, f"전화번호 미탐지: {text}"
+    # ordinary numbers are not phone numbers
+    cleaned, found = sanitize.redact("커밋 12345678 개를 2026년에 정리")
+    assert cleaned == "커밋 12345678 개를 2026년에 정리", cleaned

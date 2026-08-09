@@ -79,11 +79,13 @@ def load_credential_patterns() -> list[tuple[str, re.Pattern]]:
     return []
 
 
-def load_denylist(path: str | None) -> list[tuple[str, re.Pattern]]:
-    """Private dictionary of the maintainer's own identifiers.
+def denylist_path(path: str | None = None) -> str:
+    """Which private dictionary this run would use, or "" if there is none.
 
-    One term per line, `#` comments allowed. Absent is normal — the public
-    repo has no such file and the check simply covers less.
+    Separate from loading it because *having decided* and *having written
+    something down* are different facts, and only the first one belongs in a
+    gate. A file with no terms in it is a maintainer who looked at the
+    question and answered it; no file at all is one who never saw it.
     """
     candidates = [path] if path else [
         os.environ.get("DAILY_REPORT_PII_DENYLIST"),
@@ -91,15 +93,27 @@ def load_denylist(path: str | None) -> list[tuple[str, re.Pattern]]:
     ]
     for candidate in candidates:
         if candidate and os.path.exists(candidate):
-            terms = []
-            with open(candidate, encoding="utf-8") as handle:
-                for line in handle:
-                    term = line.split("#", 1)[0].strip()
-                    if term:
-                        terms.append(term)
-            return [("private_term", re.compile(re.escape(t), re.IGNORECASE))
-                    for t in terms]
-    return []
+            return candidate
+    return ""
+
+
+def load_denylist(path: str | None) -> list[tuple[str, re.Pattern]]:
+    """Private dictionary of the maintainer's own identifiers.
+
+    One term per line, `#` comments allowed. Absent is normal — the public
+    repo has no such file and the check simply covers less.
+    """
+    found = denylist_path(path)
+    if not found:
+        return []
+    terms = []
+    with open(found, encoding="utf-8") as handle:
+        for line in handle:
+            term = line.split("#", 1)[0].strip()
+            if term:
+                terms.append(term)
+    return [("private_term", re.compile(re.escape(t), re.IGNORECASE))
+            for t in terms]
 
 
 def tracked_files(root: str) -> list[str]:
@@ -232,6 +246,9 @@ def main() -> int:
                              "(예: \"name <id+user@users.noreply.github.com>\"). "  # pii-allow: 합성 예시
                              "이 신원의 커밋은 보고하지 않고, 다른 신원은 그대로 보고한다")
     parser.add_argument("--quiet", action="store_true", help="발견된 것만 출력")
+    parser.add_argument("--require-denylist", action="store_true",
+                        help="개인 사전이 없으면 검사하지 않고 실패한다 "
+                             "(비공개 저장소에서 공개본을 내보낼 때 쓴다)")
     args = parser.parse_args()
 
     root = os.path.abspath(args.root)
@@ -239,12 +256,40 @@ def main() -> int:
     denylist = load_denylist(args.denylist)
     detectors += denylist
 
+    # Absent is normal in the public repo's CI and not normal on the way out
+    # of the private one.
+    #
+    # The generic patterns cannot see a client's name or a project codename —
+    # only the private dictionary can, and that dictionary is deliberately not
+    # in the tree. So when it is missing this check silently becomes a much
+    # weaker one and still exits 0, while the export step printed
+    # "유출 검사 (개인 사전 포함)" above it. Somebody reading that line has been
+    # told a check ran that did not.
+    if args.require_denylist and not denylist_path(args.denylist):
+        print("❌ 개인 사전을 찾지 못해 검사를 중단합니다.\n"
+              "   일반 패턴은 고객사명·프로젝트명·코드네임을 알지 못합니다.\n"
+              "   한 줄에 한 항목으로 만들어 두세요:\n"
+              "     ~/.config/daily-report/pii-denylist.txt\n"
+              "   또는 DAILY_REPORT_PII_DENYLIST 로 경로를 지정하세요.\n"
+              "   정말 일반 패턴만으로 내보내려면 --no-denylist 를 쓰세요.",
+              file=sys.stderr)
+        return 2
+
     files = [f for f in tracked_files(root)
              if not f.endswith(BINARY_SUFFIXES) and os.path.isfile(f)]
 
     if not args.quiet:
-        print(f"검사 대상: {len(files)}개 파일, 탐지기 {len(detectors)}종"
-              f"{' (개인 사전 %d개 포함)' % len(denylist) if denylist else ' (개인 사전 없음 — 일반 패턴만)'}")
+        found = denylist_path(args.denylist)
+        if denylist:
+            dictionary = f" (개인 사전 {len(denylist)}개 포함)"
+        elif found:
+            # The distinction matters: this run had a dictionary and it was
+            # empty, which covers no client name at all. Saying "사전 없음"
+            # would hide a decision; saying nothing would hide the weakness.
+            dictionary = f" (개인 사전이 비어 있음 — 일반 패턴만: {found})"
+        else:
+            dictionary = " (개인 사전 없음 — 일반 패턴만)"
+        print(f"검사 대상: {len(files)}개 파일, 탐지기 {len(detectors)}종{dictionary}")
 
     by_kind: dict[str, int] = {}
     file_findings: list[tuple[str, int, str, str]] = []

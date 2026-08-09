@@ -161,6 +161,9 @@ def clean_dest(dest: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="공개용 내보내기 (커밋·푸시하지 않음)")
     parser.add_argument("--dest", required=True, help="내보낼 디렉터리")
+    parser.add_argument("--no-denylist", action="store_true",
+                        help="개인 사전 없이 일반 패턴만으로 검사한다 "
+                             "(고객사명·프로젝트명은 검사되지 않는다)")
     parser.add_argument("--force", action="store_true",
                         help="대상이 비어 있지 않아도 진행 (.git 은 보존)")
     args = parser.parse_args()
@@ -203,9 +206,16 @@ def main() -> int:
     for reason, count in sorted(reasons.items(), key=lambda kv: -kv[1]):
         print(f"  {count:3d}개  {reason}")
 
-    print("\n유출 검사 (개인 사전 포함):")
+    # The header used to say "개인 사전 포함" whether or not one existed, and the
+    # checker exits 0 when it does not — so the line claimed a check that had
+    # not run. This is the one moment private material becomes public, and the
+    # generic patterns are exactly the ones that cannot see a client's name.
+    print("\n유출 검사:")
     checker = os.path.join(HERE, "check_no_pii.py")
-    result = subprocess.run([sys.executable, checker, dest, "--no-history"])
+    command = [sys.executable, checker, dest, "--no-history"]
+    if not args.no_denylist:
+        command.append("--require-denylist")
+    result = subprocess.run(command)
     if result.returncode != 0:
         print("\n❌ 검사에서 걸렸습니다. 내보낸 파일은 그대로 두었으니 확인 후 다시 실행하세요.",
               file=sys.stderr)

@@ -15,9 +15,11 @@ only the model's prose goes to Notion, never the raw prompts and commands.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from collections import Counter
+from functools import lru_cache
 
 # Ordered most-specific first so a token matches its own rule, not a generic one.
 #
@@ -48,6 +50,14 @@ PATTERNS: list[tuple[str, re.Pattern]] = [
     ("aws_access_key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}")),
     ("stripe_key", re.compile(r"\bsk_(?:live|test)_[A-Za-z0-9]{16,}")),
     ("huggingface_token", re.compile(r"\bhf_[A-Za-z0-9]{20,}")),
+    # The shapes a developer's machine actually holds, which is what this tool
+    # reads. `.npmrc` is already treated as a file too sensitive to name in a
+    # report (collect_fs._is_noise) — the token that lives in it was not.
+    ("npm_token", re.compile(r"\bnpm_[A-Za-z0-9]{30,}")),
+    ("docker_pat", re.compile(r"\bdckr_pat_[A-Za-z0-9_\-]{20,}")),
+    ("google_oauth_secret", re.compile(r"\bGOCSPX-[A-Za-z0-9_\-]{20,}")),
+    ("sendgrid_key", re.compile(r"\bSG\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}")),
+    ("pypi_token", re.compile(r"\bpypi-[A-Za-z0-9_\-]{40,}")),
     ("openai_project_key", re.compile(r"\bsk-proj-[A-Za-z0-9_\-]{20,}")),
     ("openai_key", re.compile(r"\bsk-[A-Za-z0-9]{32,}")),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}")),
@@ -58,8 +68,20 @@ PATTERNS: list[tuple[str, re.Pattern]] = [
         r"\b(?:postgres|postgresql|mysql|mongodb(?:\+srv)?|redis|amqp|ftp|ssh)://"
         r"[^\s:/@]+:[^\s@/]+@")),
     ("bearer_token", re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{20,}")),
-    ("krn_rrn", re.compile(r"\b\d{6}-[1-4]\d{6}\b")),
-    ("krn_phone", re.compile(r"\b01[016789]-\d{3,4}-\d{4}\b")),
+    # Written the way people actually write them, not only with a hyphen. A
+    # detector that covers one spelling of a resident registration number
+    # covers the one nobody was worried about.
+    ("krn_rrn", re.compile(r"\b\d{6}[\s\-–—]?[1-4]\d{6}\b")),
+    ("krn_phone", re.compile(
+        r"(?:\+?82[\s\-]?1|\b01)[016789][\s\-]?\d{3,4}[\s\-]?\d{4}\b")),
+    # This tool's own setup hands the user a Notion database id and a parent
+    # page URL to paste, so those are unusually likely to be sitting in the
+    # session logs it then reads. `check_no_pii.py` has had these two since
+    # the beginning; the runtime sanitizer never did, and the comment there
+    # about the two never drifting apart only points one way.
+    ("notion_uuid", re.compile(
+        r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")),
+    ("notion_id", re.compile(r"\b[0-9a-f]{32}\b")),
     # The top-level domain has to be alphabetic. Written the obvious way,
     # `@[\w-]+\.[\w.]{2,}`, it also matches a package specifier —
     #   react@18.2.0    # pii-allow: 주소가 아니라 패키지 지정자 예시
@@ -140,10 +162,51 @@ def _mask(kind: str, matched: str) -> str:
     return f"<REDACTED {kind} {matched[:6]}… len{len(matched)}>"
 
 
+@lru_cache(maxsize=1)
+def _home_patterns() -> tuple[re.Pattern, ...]:
+    """The home directory, as it can appear inside a collected path."""
+    home = os.path.expanduser("~")
+    if not home or home in ("/", os.sep):
+        return ()
+    variants = {home, home.replace("\\", "/")}
+    flags = re.IGNORECASE if os.name == "nt" else 0
+    return tuple(re.compile(re.escape(v), flags) for v in sorted(variants, key=len,
+                                                                 reverse=True))
+
+
+def abbreviate_home(text: str) -> tuple[str, int]:
+    """Replace the home directory with `~`, and count how often.
+
+    **A home directory is a person's name.** `C:\\Users\\<이름>\\...` and
+    `/Users/<이름>/...` identify their owner as surely as an email address,
+    and file paths are in the digest deliberately — the report is about which
+    files were touched, so removing the paths would remove the report.
+
+    So the prefix is shortened rather than the path removed. That keeps every
+    part that carries meaning and drops the one part that carries an identity.
+
+    The prompt template already asks the model to abbreviate paths this way.
+    Asking is not the same as doing: a model that ignores the instruction puts
+    the account name in the Notion row, and nothing downstream would notice.
+    This makes it true before the model ever sees it.
+    """
+    count = 0
+    for pattern in _home_patterns():
+        text, replaced = pattern.subn("~", text)
+        count += replaced
+    return text, count
+
+
 def redact(text: str) -> tuple[str, Counter]:
     findings: Counter = Counter()
     if not text:
         return text, findings
+    # First, before any pattern runs: a redaction marker must not be able to
+    # swallow the home path, and a shortened path is what every later rule
+    # should be matching against.
+    text, shortened = abbreviate_home(text)
+    if shortened:
+        findings["home_path"] += shortened
     for kind, pattern in PATTERNS:
         def replace(match: re.Match, kind=kind) -> str:
             findings[kind] += 1

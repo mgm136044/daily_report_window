@@ -1801,6 +1801,89 @@ def test_an_excluded_folder_cannot_be_reached_by_another_spelling(configured, ho
     indirect = os.path.join(str(home), "elsewhere", "..", "confidential", "sub")
     assert config.is_excluded(indirect), f"'..' 로 우회됨: {indirect}"
 
+def test_the_build_pipeline_is_pinned():
+    """What this workflow produces is an unsigned executable other people
+    install, so an upstream change reaches them without passing anyone.
+
+    A major-version tag is a moving pointer its owner can repoint — the 2025
+    `tj-actions/changed-files` compromise worked exactly that way. And
+    `pip install pyinstaller` takes whatever is newest at build time, which is
+    the tool that makes the binary.
+
+    Versions, not hashes, for the Python packages. Full hash pinning needs a
+    lockfile carrying every transitive wheel for five runner/interpreter
+    combinations; written without being able to run it on each, it would break
+    the build rather than secure it. Stated in the workflow so the limit is
+    not mistaken for a guarantee.
+    """
+    import re as _re
+    workflow = open(os.path.join(ROOT, ".github", "workflows", "build.yml"),
+                    encoding="utf-8").read()
+
+    uses = _re.findall(r"uses:\s*(\S+)", workflow)
+    assert uses, "액션이 하나도 없다 — 테스트 전제가 사라졌다"
+    for action in uses:
+        assert _re.search(r"@[0-9a-f]{40}$", action), f"SHA 로 고정되지 않았다: {action}"
+
+    for name in ("PYTEST_VERSION", "PYINSTALLER_VERSION"):
+        assert _re.search(rf'{name}: "[\d.]+"', workflow), f"{name} 이 고정되지 않았다"
+    assert "pip pytest" not in workflow and "pip pyinstaller" not in workflow, \
+        "여전히 최신 버전을 그때그때 받는다"
+
+    # least privilege by default; only the release job asks for more
+    assert _re.search(r"(?m)^permissions:\n  contents: read", workflow), \
+        "기본 권한이 읽기 전용이 아니다"
+
+def test_no_workflow_expression_is_interpolated_into_a_script():
+    """`${{ }}` is substituted as text before any shell parses the script, so
+    a value containing a quote becomes code.
+
+    Git allows `"` and `$` in a tag name — `git check-ref-format` accepts
+    `refs/tags/v1.0";calc;"` — and pushing a tag is what starts a release.
+    Self-inflicted, since it takes push access, and still the shape GitHub
+    documents as script injection.
+    """
+    import re as _re
+    workflow = open(os.path.join(ROOT, ".github", "workflows", "build.yml"),
+                    encoding="utf-8").read()
+    for block in _re.finditer(r"^(\s+)run: \|?\n((?:\1  .*\n|\n)*)",
+                              workflow, _re.M):
+        body = _re.sub(r"^\s*#.*$", "", block.group(2), flags=_re.M)
+        found = _re.findall(r"\$\{\{\s*([^}]+?)\s*\}\}", body)
+        allowed = [f for f in found if f.startswith("env.")]
+        assert not set(found) - set(allowed), \
+            f"run 블록에 표현식이 직접 들어갔다: {set(found) - set(allowed)}"
+
+
+
+
+def test_exporting_without_the_private_dictionary_is_refused():
+    """The export header said "개인 사전 포함" whether or not one existed, and
+    the checker exits 0 when it does not — so the line claimed a check that had
+    not run.
+
+    This is the one moment private material becomes public, and the generic
+    patterns are exactly the ones that cannot see a client's name. The public
+    repo's own CI still runs without a dictionary, correctly: it has none, and
+    is not where the private material is.
+    """
+    checker = open(os.path.join(ROOT, "scripts", "check_no_pii.py"),
+                   encoding="utf-8").read()
+    assert "--require-denylist" in checker
+    assert "개인 사전을 찾지 못해 검사를 중단합니다" in checker
+
+    export = open(os.path.join(ROOT, "scripts", "export_public.py"),
+                  encoding="utf-8").read()
+    assert '"--require-denylist"' in export, "내보내기가 사전을 요구하지 않는다"
+    assert "--no-denylist" in export, "의식적으로 건너뛸 방법이 없다"
+    # Code lines only. The comment above the fix quotes the old header on
+    # purpose, and a plain substring test reads that as the claim returning —
+    # the third time in this file that a forbidden-literal assertion has
+    # tripped over the sentence explaining why the literal is forbidden.
+    code = "\n".join(line for line in export.splitlines()
+                     if not line.strip().startswith("#"))
+    assert "개인 사전 포함" not in code, "돌지 않은 검사를 돌았다고 적는다"
+
 def test_the_summarizers_own_transcripts_are_pruned_and_purged():
     """`summarize` runs `claude -p` from a scratch directory, and the comment
     there explains this keeps the job from collecting its own summarising.

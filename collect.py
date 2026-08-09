@@ -431,12 +431,40 @@ def collect(date_str: str) -> dict:
                                 config.key(other.rstrip("/" + os.sep) + os.sep))
                             for other in ordered)]
     disk = collect_fs.collect(date_str, top_level, committed)
-    if sessions["stats"]["transcripts_total"] == 0:
-        # finding zero transcripts at all means the source is unreadable or
-        # moved, not that nothing happened — treating it as a quiet day would
-        # permanently mark the date complete with no content
+
+    # "No source produced anything", not "no Claude transcripts".
+    #
+    # Finding zero records where a source exists means it is unreadable or has
+    # moved, not that nothing happened — and treating that as a quiet day would
+    # mark the date complete with no content, permanently. That reasoning is
+    # right and the test for it was wrong: it counted only Claude Code
+    # transcripts, so a machine without Claude Code installed raised here on
+    # every single day. Codex rollouts sitting right there, `engine = "codex"`
+    # in the config, the summarizer never reached. Reported from a real
+    # install; reproduced by pointing `claude_projects_dir` at a directory that
+    # does not exist while a Codex rollout waits beside it.
+    #
+    # A source that is simply not installed is not a fault. One that is
+    # configured and empty still is.
+    claude_dir = config.expand(config.load()["sources"]["claude_projects_dir"])
+    codex_dir = config.expand(config.load()["sources"].get("codex_sessions_dir", ""))
+    installed = [(name, path) for name, path, seen in (
+        ("Claude Code", claude_dir, sessions["stats"]["transcripts_total"]),
+        ("Codex", codex_dir, codex["stats"]["rollouts_total"]))
+        if os.path.isdir(path)]
+    if not installed:
         raise RuntimeError(
-            f"세션 기록을 하나도 찾지 못했습니다: {config.expand(config.load()['sources']['claude_projects_dir'])}")
+            "세션 기록을 읽을 수 있는 도구가 하나도 없습니다.\n"
+            f"  Claude Code: {claude_dir}\n"
+            f"  Codex      : {codex_dir}\n"
+            "  둘 중 하나는 설치돼 있어야 하고, 경로가 다르면 config.toml 의 "
+            "[sources] 에서 고치세요.")
+    empty = [(name, path) for name, path in installed
+             if (sessions["stats"]["transcripts_total"] if name == "Claude Code"
+                 else codex["stats"]["rollouts_total"]) == 0]
+    if len(empty) == len(installed):
+        listed = "\n".join(f"  {name}: {path}" for name, path in empty)
+        raise RuntimeError(f"세션 기록을 하나도 찾지 못했습니다:\n{listed}")
 
     return {
         "date": date_str,

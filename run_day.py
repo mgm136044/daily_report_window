@@ -453,8 +453,30 @@ def run_one(date_str: str, token: str, database_id: str) -> dict:
         json.dump(digest, handle, ensure_ascii=False, indent=1)
 
     if not digest["projects"]:
+        # "Nothing happened" and "everything was thrown away" look identical
+        # from here, and only one of them is the user's fault to fix.
+        #
+        # A session is dropped when its working directory is not a project:
+        # no root marker anywhere above it, and its parent is not a configured
+        # container. Somebody who chats with an agent in a plain folder gets a
+        # full day of work discarded and the word 활동 없음, which reads as
+        # "you did nothing" rather than "I found four sessions and could not
+        # place any of them". `refine` has recorded the list all along and
+        # nobody printed it.
+        dropped = digest.get("dropped_cwds") or []
+        if dropped:
+            say(f"{date_str}: 세션 {len(dropped)}개를 찾았지만 프로젝트로 인정하지 못해 "
+                f"모두 버렸습니다.")
+            for cwd in dropped[:5]:
+                say(f"    {cwd}")
+            if len(dropped) > 5:
+                say(f"    … 외 {len(dropped) - 5}개")
+            say("  프로젝트로 인정되려면 그 폴더나 상위에 .git·pyproject.toml 같은 "
+                "표시가 있거나,")
+            say("  상위 폴더가 config.toml 의 [projects] containers 에 있어야 합니다.")
         return {"date": date_str, "skipped": "활동 없음",
-                "digest_findings": dict(digest_findings)}
+                "digest_findings": dict(digest_findings),
+                "cwds_dropped": len(dropped)}
 
     report = summarize.summarize(digest)
 

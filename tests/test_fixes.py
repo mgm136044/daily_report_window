@@ -1745,6 +1745,95 @@ def test_purge_refuses_to_run_from_a_checkout():
     assert 'purge = "--purge" in' in source
     assert "return remove_installation(argv)" in source
 
+# --- 실제 설치에서 나온 결함 -------------------------------------------------
+
+def test_a_machine_without_claude_code_can_still_collect(configured, tmp_path, home):
+    """Reported from a real install: everything set up, Codex present and used,
+    and no report ever produced.
+
+    `collect` refused whenever it found zero Claude Code transcripts. The
+    reasoning was right — a source that exists and yields nothing is broken,
+    and calling that a quiet day would mark the date complete forever — but the
+    test counted only Claude's transcripts. On a machine where Claude Code is
+    not installed there is no such directory, so every day died there, with
+    Codex rollouts sitting beside it and `engine = "codex"` in the config.
+
+    A tool that is not installed is not a fault. One that is installed and
+    empty still is.
+    """
+    configured()
+    cfg = config.load()
+    cfg["sources"]["claude_projects_dir"] = str(tmp_path / "no-such-claude")
+    codex_root = tmp_path / "codex"
+    (codex_root / "2026" / "08" / "04").mkdir(parents=True)
+    cfg["sources"]["codex_sessions_dir"] = str(codex_root)
+
+    project = home / "development" / "sample-project"
+    project.mkdir(parents=True, exist_ok=True)
+    (project / "pyproject.toml").write_text("x", encoding="utf-8")
+    records = [
+        {"type": "session_meta", "timestamp": "2026-08-04T10:00:00.000Z",
+         "payload": {"cwd": str(project), "id": "r1", "source": "cli"}},
+        {"type": "event_msg", "timestamp": "2026-08-04T10:01:00.000Z",
+         "payload": {"type": "user_message", "message": "코덱스로 작업했다"}},
+    ]
+    with open(codex_root / "2026" / "08" / "04" / "r.jsonl", "w",
+              encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    data = collect.collect("2026-08-04")          # must not raise
+    assert data["codex_projects"], "Codex 기록이 수집되지 않았다"
+
+def test_neither_tool_installed_still_refuses(configured, tmp_path):
+    """The half of the original rule that was right stays right."""
+    configured()
+    cfg = config.load()
+    cfg["sources"]["claude_projects_dir"] = str(tmp_path / "no-claude")
+    cfg["sources"]["codex_sessions_dir"] = str(tmp_path / "no-codex")
+    try:
+        collect.collect("2026-08-04")
+    except RuntimeError as error:
+        assert "하나도" in str(error) or "없습니다" in str(error)
+        return
+    raise AssertionError("읽을 수 있는 도구가 없는데 조용히 통과했다")
+
+def test_a_configured_source_that_is_empty_is_still_a_fault(configured, tmp_path):
+    """An installed tool that yields nothing means the path moved or the
+    permissions changed, and treating that as a quiet day would mark the date
+    complete with no content, permanently."""
+    configured()
+    cfg = config.load()
+    empty_claude = tmp_path / "claude-empty"
+    empty_claude.mkdir()
+    cfg["sources"]["claude_projects_dir"] = str(empty_claude)
+    cfg["sources"]["codex_sessions_dir"] = str(tmp_path / "no-codex")
+    try:
+        collect.collect("2026-08-04")
+    except RuntimeError:
+        return
+    raise AssertionError("설치돼 있는데 비어 있는 소스를 조용한 하루로 봤다")
+
+def test_dropped_sessions_are_named_rather_than_called_no_activity():
+    """"Nothing happened" and "everything was thrown away" look identical from
+    the ledger, and only one of them is something the user can fix.
+
+    A session is dropped when its working directory is not a project: no root
+    marker above it and its parent not a configured container. Somebody who
+    works in a plain folder loses the whole day and reads 활동 없음, which
+    sounds like a verdict on them. `refine` has recorded the list all along.
+    """
+    source = open(os.path.join(ROOT, "run_day.py"), encoding="utf-8").read()
+    branch = source.split('skipped": "활동 없음"')[0].split("if not digest[\"projects\"]")[1]
+    assert "dropped_cwds" in branch, "버려진 세션을 말하지 않는다"
+    assert "containers" in branch, "고치는 방법을 알려주지 않는다"
+    assert '"cwds_dropped"' in source, "장부에 남지 않아 doctor 가 볼 수 없다"
+
+    doctor_source = open(os.path.join(ROOT, "doctor.py"), encoding="utf-8").read()
+    assert "def check_dropped_sessions" in doctor_source
+    assert "check_dropped_sessions()" in doctor_source.split("def main")[1]
+
+
 # --- 독립 감사에서 나온 결함 -------------------------------------------------
 
 def test_the_bundle_names_its_documents_one_by_one(tmp_path):

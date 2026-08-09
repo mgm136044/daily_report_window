@@ -254,6 +254,39 @@ def check_tooling() -> None:
                f"config.toml 의 [summary] {setting} 에 전체 경로를 넣으세요.")
 
 
+def check_dropped_sessions() -> None:
+    """Sessions the last run found and could not place.
+
+    A working directory becomes a project only if it or something above it
+    carries a root marker, or its parent is a configured container. Everything
+    else is discarded — and the day then reports 활동 없음, which reads as
+    "you did nothing" rather than "I found four sessions and placed none of
+    them". The number has always been in the ledger; nothing looked at it.
+    """
+    state = run_day.read_state()
+    completed = state.get("completed") or {}
+    ran = [day for day, entry in completed.items()
+           if not entry.get("skipped") or entry["skipped"] == run_day.NO_ACTIVITY]
+    if not ran:
+        return
+    latest = max(ran)
+    entry = completed[latest]
+    dropped = entry.get("cwds_dropped") or 0
+    if not dropped:
+        return
+    if entry.get("skipped") == run_day.NO_ACTIVITY:
+        report(FAIL, "세션 귀속",
+               f"{latest}: 세션 {dropped}개를 찾았지만 전부 버려 '활동 없음' 이 됐습니다.\n"
+               f"     작업 폴더가 프로젝트로 인정되지 않았습니다 — 그 폴더나 상위에\n"
+               f"     .git·pyproject.toml 같은 표시가 있거나, 상위 폴더가\n"
+               f"     [projects] containers 에 있어야 합니다.\n"
+               f"     버려진 경로는 work/digest_{latest}.json 의 dropped_cwds 에 있습니다.")
+    else:
+        report(WARN, "세션 귀속",
+               f"{latest}: 세션 {dropped}개가 프로젝트로 인정되지 않아 빠졌습니다 "
+               f"(보고서는 나왔습니다)")
+
+
 def check_config_currency() -> None:
     """Settings this version offers that this install has never been shown.
 
@@ -411,6 +444,7 @@ def main() -> int:
     check_config_currency()
     check_tooling()
     check_last_run()
+    check_dropped_sessions()
     check_stale_lock()
     check_notion()
     check_disk()

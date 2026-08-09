@@ -1909,17 +1909,24 @@ def test_exclusion_fragments_expand_environment_variables(configured, home):
             os.environ[variable] = original
         config._fragments.cache_clear()
 
+@windows_only
 def test_the_examples_environment_variables_expand_when_they_are_defined():
     """The shipped Windows example puts `%OneDrive%/` in walk_exclude, and
     `_fragments` never expanded anything, so it matched nothing.
 
-    What is asserted is that the *mechanism* runs — not that every variable
-    is set on the machine running the tests. `%OneDrive%` exists only where
-    OneDrive does; on a CI runner it is undefined and staying literal is the
-    correct outcome, since there is no such folder to exclude. The first
-    version of this test demanded expansion unconditionally, passed here, and
-    failed on all five runners — the exact mistake this suite exists to catch,
-    made while adding a test to it.
+    What is asserted is that the *mechanism* runs — not that every variable is
+    set on the machine running the tests. `%OneDrive%` exists only where
+    OneDrive does; undefined and staying literal is the correct outcome, since
+    there is no such folder to exclude.
+
+    Two versions of this test were wrong before this one, both by asserting a
+    property of a machine as though it were a property of the configuration.
+    The first demanded expansion unconditionally and failed on all five
+    runners. The second defined the variable but still ran everywhere, and
+    `os.path.expandvars` does not expand `%VAR%` on POSIX at all — only
+    `$VAR` — so a Windows config read on Linux can never satisfy it. The
+    macOS example has no percent-form entries, so nothing is lost by marking
+    this: it is about Windows-style variables in the Windows file.
     """
     import tomllib
     with open(os.path.join(ROOT, "config.windows.example.toml"), "rb") as handle:

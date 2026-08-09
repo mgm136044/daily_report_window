@@ -29,6 +29,7 @@ import sanitize  # noqa: E402
 import summarize  # noqa: E402
 
 HOME = os.path.expanduser("~")
+_re_drive = __import__("re").compile(r"^[A-Za-z]:/?$")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WINDOWS = os.name == "nt"
 MACOS = sys.platform == "darwin"
@@ -1747,6 +1748,48 @@ def test_purge_refuses_to_run_from_a_checkout():
 
 # --- 실제 설치에서 나온 결함 -------------------------------------------------
 
+def test_work_on_any_drive_is_a_project_without_git(configured):
+    """A drive root holds things; it is never itself the work.
+
+    The example configuration says as much — "Drive roots belong here for the
+    common Windows habit of keeping projects at `D:\\something`" — and then
+    lists `C:/` and `D:/`. Somebody working on `E:` or a network share had
+    every session discarded: a folder directly under an unlisted drive is not
+    a project and not under a container either, so the day read 활동 없음.
+
+    Lengthening the list would have been the same bug with a later trigger.
+    """
+    configured()
+    config.load()["exclude"]["paths"] = []
+    config._fragments.cache_clear()
+    config._canonical_cached.cache_clear()
+
+    if WINDOWS:
+        separator = os.sep
+        assert pr.project_label(f"E:{separator}work{separator}stuff") == "work"
+        assert pr.project_label(f"F:{separator}projects") == "projects"
+        assert pr.project_label(f"Z:{separator}연구{separator}2026") == "연구"
+        # a UNC share root is a mount point, like a drive letter
+        share = separator * 2 + "nas" + separator + "share"
+        assert pr.project_label(share + separator + "work") == "work"
+        assert pr.project_label(share) is None, "공유 루트 자체가 프로젝트가 됐다"
+        # and the roots themselves are still not projects
+        for root in (f"C:{separator}", f"D:{separator}", f"E:{separator}"):
+            assert pr.project_label(root) is None, f"{root} 이 프로젝트가 됐다"
+    else:
+        assert pr.project_label("/") is None
+
+def test_the_home_directory_is_still_never_a_project(configured, home):
+    """The rule this generalises is the one that once made the home directory
+    a project named after the Windows account, because an extended-length path
+    walked past every check. Widening what counts as a container must not
+    bring that back."""
+    configured()
+    config.load()["exclude"]["paths"] = []
+    config._fragments.cache_clear()
+    assert pr.project_label(os.path.expanduser("~")) is None
+    assert pr.project_root(os.path.expanduser("~")) is None
+
 def test_a_machine_without_claude_code_can_still_collect(configured, tmp_path, home):
     """Reported from a real install: everything set up, Codex present and used,
     and no report ever produced.
@@ -2886,21 +2929,31 @@ def test_wizard_writes_env_without_a_bom_and_keeps_the_other_keys():
 
 @windows_only
 def test_every_fixed_drive_becomes_a_container_and_never_a_project():
-    """The example names the drives the machine it was written on had.
+    """A drive root is a container and never a project, by construction.
 
-    A drive root has to be both a container (so a project sitting directly on
-    it counts) and never a project itself. On a machine whose work lives on
-    `E:`, `E:\\work\\app` walks up to `E:\\`, finds no container, and is dropped
-    — silently, the way everything else in this codebase fails.
+    This used to be configuration: the example named `C:/` and `D:/` because
+    that is what the machine it was written on had, and the installer spliced
+    the machine's other letters into both lists. It worked and had to keep
+    working — a drive attached after installation was still invisible, and a
+    network share always was. On a machine whose work lives on `E:`,
+    `E:\\work\\app` walked up to `E:\\`, found no container, and was dropped
+    silently.
+
+    The rule moved into `project_root`, where it cannot go stale, and the
+    lists no longer name any drive.
     """
+    example = open(os.path.join(ROOT, "config.windows.example.toml"),
+                   encoding="utf-8").read()
+    import tomllib
+    parsed = tomllib.loads(example)
+    for key in ("containers", "never"):
+        drives = [entry for entry in parsed["projects"][key]
+                  if _re_drive.match(entry)]
+        assert not drives, f"[projects] {key} 에 드라이브가 남아 있다: {drives}"
+
     script = open(os.path.join(ROOT, "install.ps1"), encoding="utf-8-sig").read()
-    assert "Get-PSDrive -PSProvider FileSystem" in script
-    assert '$text.Replace(\'    "C:/",\'' in script, \
-        "설치기가 드라이브를 컨테이너 목록에 넣지 않는다"
-    # the anchor must appear in both lists, or one of them is left short
-    example = open(os.path.join(ROOT, "config.windows.example.toml"), encoding="utf-8").read()
-    assert example.count('    "C:/",') == 2, \
-        "containers 와 never 양쪽에 드라이브 앵커가 있어야 한다"
+    assert '$text.Replace(\'    "C:/",\'' not in script, \
+        "설치기가 아직 드라이브를 설정에 끼워 넣는다"
 
 @windows_only
 def test_probe_depth_matches_what_the_collector_will_use():

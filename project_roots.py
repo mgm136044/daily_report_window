@@ -46,6 +46,26 @@ def is_excluded(path: str) -> bool:
     return config.is_excluded(path)
 
 
+def _is_mount_root(path: str) -> bool:
+    """True for `D:\\`, `\\\\nas\\share`, and `/` — the top of a filesystem.
+
+    These are containers whether or not anybody listed them. The example
+    configuration says so in its own comment — "Drive roots belong here for the
+    common Windows habit of keeping projects at `D:\\something`" — and then
+    names two of them, `C:/` and `D:/`. A person working on `E:` or on a
+    network share had every session discarded, silently, because a folder
+    directly under a drive that nobody thought to list is not a project and
+    not under a container either.
+
+    Making the list longer would have been the same bug with a later trigger.
+    A drive root is a place that holds things; it is never itself the work.
+    """
+    if _is_anchor(path):
+        return True
+    drive, rest = os.path.splitdrive(path)
+    return bool(drive) and rest.strip("/\\") == ""
+
+
 def _is_anchor(path: str) -> bool:
     """True at the top of the tree — `/` on macOS, `D:\\` on Windows.
 
@@ -79,8 +99,9 @@ def project_root(cwd: str) -> str | None:
         parent = os.path.dirname(current)
         if parent == current:
             break
-        # a direct child of a container is itself a project even without a marker
-        if config.key(parent) in containers:
+        # a direct child of a container is itself a project even without a
+        # marker — and a drive or share root is a container by nature
+        if config.key(parent) in containers or _is_mount_root(parent):
             return current
         current = parent
     return None

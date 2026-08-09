@@ -347,21 +347,15 @@ if (Test-Path $ConfigPath) {
     # because that is what the machine it was written on had — on a machine
     # whose work lives on E:, `E:\work\app` walks up to `E:\`, finds no
     # container, and is dropped. Silently, like everything else in this file.
-    $addedDrives = @()
-    $text = Get-Content -Raw -Encoding UTF8 $ConfigPath
-    foreach ($drive in (Get-PSDrive -PSProvider FileSystem)) {
-        if ($drive.Root -notmatch '^[A-Za-z]:\\$' -or $null -eq $drive.Used) { continue }
-        $letter = "$($drive.Name.ToUpper()):/"
-        if ($text -match [regex]::Escape("`"$letter`"")) { continue }
-        # One replacement, two lists: `    "C:/",` appears in both containers
-        # and never, and both of them need every drive.
-        $text = $text.Replace('    "C:/",', "    `"C:/`",`r`n    `"$letter`",")
-        $addedDrives += $letter
-    }
-    Write-Utf8NoBom $ConfigPath $text
-    if ($addedDrives.Count -gt 0) {
-        Ok "드라이브 추가: $($addedDrives -join ', ')"
-    }
+    # Nothing to add. `project_root` treats a drive root and a UNC share root
+    # as containers by construction, so `E:\work` is a project without anybody
+    # naming `E:/` — and a drive root is never returned as a project either.
+    #
+    # This step used to enumerate the machine's drives and splice each one into
+    # both lists, which worked and had to keep working: a drive attached after
+    # installation was still invisible, and so was every network share. The
+    # rule is in the code now, where it cannot go stale.
+    Ok "드라이브 루트는 설정 없이 인식됩니다"
 
     # git.authors has no usable default: empty collects nothing, and guessing
     # the wrong identity silently attributes other people's commits.

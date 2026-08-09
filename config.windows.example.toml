@@ -199,8 +199,12 @@ paths = [
 # these is a project; the container itself is not.
 #
 # If a wrapper directory shows up as a project in your reports, add it here.
-# Drive roots belong here for the common Windows habit of keeping projects at
-# `D:\something` rather than under the home directory.
+#
+# Drive roots and network share roots do not need listing — a drive holds
+# things and is never itself the work, so `E:\anything` and
+# `\\server\share\anything` are projects without being named here. They used
+# to need naming, this list had `C:/` and `D:/` in it, and anyone working on
+# another letter had every session silently discarded.
 containers = [
     "~",
     "~/source/repos",
@@ -208,8 +212,6 @@ containers = [
     "~/development",
     "~/projects",
     "~/src",
-    "C:/",
-    "D:/",
     # The shell folders are containers, not projects — a session that ran in
     # `~/Documents` is work in whatever is under it, not work on "Documents".
     #
@@ -259,8 +261,9 @@ never = [
     # anything else under OneDrive now needs a root marker to count as a
     # project — which is the right bar.
     "~/OneDrive",
-    "C:/",
-    "D:/",
+    # Drive and share roots are not listed here either. `project_root` stops
+    # at the top of a filesystem by construction, so a drive root can never be
+    # returned as a project no matter what this list says.
 ]
 
 [labels]

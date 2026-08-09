@@ -13,7 +13,7 @@
 # URL and hash updated. There is no way to point winget at "latest".
 
 PackageIdentifier: mgm136044.daily-report
-PackageVersion: 0.3.0
+PackageVersion: 0.3.1
 InstallerType: inno
 Scope: user
 InstallModes:
@@ -31,7 +31,7 @@ UpgradeBehavior: install
 ReleaseDate: 2026-08-09
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/mgm136044/daily_report_window/releases/download/v0.3.0/daily-report-setup-0.3.0.exe
-    InstallerSha256: B22F7E46015E9CB2C5A79F1A2AB1E952505C1C446F89DA6B2222AD87C54B148E
+    InstallerUrl: https://github.com/mgm136044/daily_report_window/releases/download/v0.3.1/daily-report-setup-0.3.1.exe
+    InstallerSha256: BDC4E3EE7FA1F153F128ED897C3811D2FA0EAF082A39AA6C92CCFF8C32E9B7AA
 ManifestType: installer
 ManifestVersion: 1.6.0

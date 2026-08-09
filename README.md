@@ -300,11 +300,12 @@ Session logs contain credentials. Scanning a month of real prompts and shell
 commands here turned up live API tokens in plain text; anyone who has pasted a
 token into a command has one too.
 
-- **The digest is sent to the Anthropic API to be summarised.** `claude -p`
-  writes the report, so the whole sanitised digest — prompts, shell commands and
-  file paths — reaches the model through the Claude Code CLI. The only thing
-  that never leaves the machine is what `exclude.paths` kept from being
-  collected in the first place.
+- **The digest is sent to the chosen engine's API to be summarised.** The
+  report is written by `claude -p` or `codex exec`, so the whole sanitised
+  digest — prompts, shell commands and file paths — reaches the model through
+  that CLI: the Anthropic API under `engine = "claude"`, the OpenAI API under
+  `engine = "codex"`. The only thing that never leaves the machine is what
+  `exclude.paths` kept from being collected in the first place.
 - **Only the model's prose is published to Notion**, never the raw prompts and
   commands.
 - Sanitisation runs twice: on the digest before the model sees it, and on the

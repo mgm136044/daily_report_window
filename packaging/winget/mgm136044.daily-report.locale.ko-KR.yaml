@@ -5,7 +5,7 @@
 # the repository URL does not already show.
 
 PackageIdentifier: mgm136044.daily-report
-PackageVersion: 0.1.5
+PackageVersion: 0.2.0
 PackageLocale: ko-KR
 Publisher: mgm136044
 PublisherUrl: https://github.com/mgm136044
@@ -23,13 +23,13 @@ Description: |-
   만듭니다. 매일 04:05 에 예약 작업이 알아서 돌고, 기기가 꺼져 있던 날은 다음 실행에서
   채웁니다.
 
-  요약은 로그인된 Claude Code CLI 가 만들기 때문에, 살균을 거친 수집 결과가
-  Anthropic API 로 전송됩니다. Notion 에 게시되는 것은 모델이 쓴 산문뿐이며
-  원본 프롬프트와 명령은 올라가지 않습니다. 자격증명 마스킹이 두 번 — 모델이
-  보기 전과 게시하기 전에 — 돌아갑니다. 대외비 폴더는 `exclude.paths` 로
+  요약은 로그인된 Claude Code CLI 또는 Codex CLI 가 만듭니다. 그래서 살균을 거친
+  수집 결과가 해당 제공자의 API 로 전송됩니다. Notion 에 게시되는 것은 모델이 쓴
+  산문뿐이며 원본 프롬프트와 명령은 올라가지 않습니다. 자격증명 마스킹이 두 번 —
+  모델이 보기 전과 게시하기 전에 — 돌아갑니다. 대외비 폴더는 `exclude.paths` 로
   수집 자체를 막을 수 있습니다.
 
-  Notion 내부 연결 토큰과 로그인된 Claude Code CLI 가 필요합니다.
+  Notion 내부 연결 토큰과, 로그인된 Claude Code CLI 또는 Codex CLI 가 필요합니다.
 Moniker: daily-report
 Tags:
   - notion

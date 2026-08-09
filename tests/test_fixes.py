@@ -2592,6 +2592,14 @@ PUBLIC_PRIVACY_DOCS = ("README.md", "README.ko.md",
                        os.path.join("packaging", "winget",
                                     "mgm136044.daily-report.locale.ko-KR.yaml"))
 
+# Which provider receives the digest depends on `[summary] engine`, so no one
+# name can be required. The list is explicit rather than a search for the word
+# "API" so that watering the sentence down fails here instead of passing on a
+# three-letter word — this test exists because the previous sentence was a
+# promise the architecture did not keep.
+DISCLOSURES = ("Anthropic API", "해당 제공자의 API", "선택한 엔진의 API",
+               "chosen engine's API")
+
 def test_public_docs_disclose_that_the_digest_reaches_the_api():
     """The report is written by `claude -p`, which is a network API client.
 
@@ -2611,7 +2619,8 @@ def test_public_docs_disclose_that_the_digest_reaches_the_api():
         # whitespace-collapsed, because in a YAML block scalar the line breaks
         # are the author's wrapping and nothing else — the phrase straddled one
         flat = _re.sub(r"\s+", " ", body)
-        assert "Anthropic API" in flat, f"{name}: 전송 사실을 밝히지 않는다"
+        assert any(phrase in flat for phrase in DISCLOSURES), \
+            f"{name}: 전송 사실을 밝히지 않는다"
 
 def test_the_retracted_claim_does_not_come_back():
     """Named literally, because the correction reads similarly to the error.

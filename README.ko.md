@@ -272,10 +272,11 @@ Codex 는 답변을 stdout 이 아니라 `-o` 파일에서 읽는다. `codex exe
 살아 있는 API 토큰이 평문으로 나왔다. **명령줄에 토큰을 한 번이라도 붙여 넣은 사람은
 자기 로그에 그걸 갖고 있다.**
 
-- **요약을 위해 digest 는 Anthropic API 로 전송된다.** 보고서를 `claude -p` 가 쓰기
-  때문에, 살균을 거친 digest 전체 — 프롬프트·셸 명령·파일 경로 — 가 Claude Code CLI 를
-  통해 모델에게 간다. 기기 밖으로 아예 나가지 않는 것은 `exclude.paths` 로 처음부터
-  수집하지 않은 것뿐이다.
+- **요약을 위해 digest 는 선택한 엔진의 API 로 전송된다.** 보고서를 `claude -p` 나
+  `codex exec` 가 쓰기 때문에, 살균을 거친 digest 전체 — 프롬프트·셸 명령·파일 경로 —
+  가 해당 CLI 를 통해 모델에게 간다. `engine = "claude"` 면 Anthropic API 로,
+  `engine = "codex"` 면 OpenAI API 로 간다. 기기 밖으로 아예 나가지 않는 것은
+  `exclude.paths` 로 처음부터 수집하지 않은 것뿐이다.
 - **Notion 에 게시되는 건 모델이 쓴 산문뿐이다.** 원본 프롬프트와 명령은 올라가지 않는다.
 - 살균은 두 번 돈다 — 모델이 보기 전의 digest 에, 그리고 Notion 에 쓰기 전의 보고서에.
 - `exclude.paths` 는 **수집 자체를 막는다.** 정규식으로 가리는 것보다 강하다.
